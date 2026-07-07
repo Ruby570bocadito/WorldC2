@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package proto;
 
-option go_package = "github.com/ctrlboty/c2/internal/proto";
+option go_package = "github.com/Ruby570bocadito/WorldC2/src/go/internal/proto";
 
 // Envelope is the top-level message wrapper for all C2 communication.
 // Every message is encrypted (XChaCha20-Poly1305), then serialized as Envelope.
