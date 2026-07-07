@@ -1,0 +1,42 @@
+# WORLDC2 C2 - Secure Configuration Example
+# Copy to config.yaml and modify as needed
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  max_sessions: 1000
+  heartbeat_interval: 30s
+  session_timeout: 300s
+  reconnect_max_backoff: 300s
+
+api:
+  port: 9090
+
+transport:
+  http_port: 8445
+  ws_port: 8446
+  dns_port: 0
+  dns_domains: []
+
+database:
+  driver: "sqlite"
+  dsn: "data/worldc2.db"
+
+tls:
+  enabled: true
+  auto_cert: false
+  cert_file: "certs/server.crt"
+  key_file: "certs/server.key"
+  min_version: "1.3"
+
+logging:
+  level: "info"
+  output: "stdout"
+  file: "data/worldc2.log"
+
+# Operators - passwords should be bcrypt hashes
+# Generate with: python3 -c "import bcrypt; print(bcrypt.hashpw(b'YourPassword', bcrypt.gensalt()).decode())"
+operators:
+  - username: "admin"
+    password: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"  # Default: admin
+    role: "admin"

@@ -1,0 +1,194 @@
+name: WORLDC2 C2 CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download Go dependencies
+        run: cd src/go && go mod download
+
+      - name: Run Go tests
+        run: cd src/go && go test ./... -v -race -coverprofile=coverage.out
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: src/go/coverage.out
+
+      - name: Run Go vet
+        run: cd src/go && go vet ./...
+
+      - name: Check Go formatting
+        run: |
+          cd src/go
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Go files need formatting:"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: Python syntax check
+        run: |
+          python3 -m py_compile scripts/console.py
+          python3 -m py_compile scripts/payload.py
+          python3 -m py_compile scripts/deploy.py
+          python3 -m py_compile scripts/harden.py
+          python3 -m py_compile tests/run_tests.py
+          python3 -m py_compile tests/stress_test.py
+          python3 -m py_compile tests/integration_test.py
+          python3 -m py_compile tests/advanced_test.py
+          python3 -m py_compile tests/e2e_test.py
+          python3 -m py_compile tests/evasion_payload_test.py
+          python3 -m py_compile tests/pentest.py
+
+      - name: Build server and agent
+        run: |
+          cd src/go && go build -o ../worldc2-server ./cmd/server/main.go
+          cd src/go && go build -o ../worldc2-agent ./cmd/agent/main.go
+
+      - name: Run functional tests
+        run: |
+          ./worldc2-server -config config.yaml -no-tls &
+          sleep 3
+          python3 tests/run_tests.py --server http://127.0.0.1:9090
+          kill %1 2>/dev/null || true
+
+      - name: Run advanced tests
+        run: |
+          rm -f worldc2.db
+          ./worldc2-server -config config.yaml -no-tls &
+          sleep 3
+          timeout 180 python3 tests/advanced_test.py
+          kill %1 2>/dev/null || true
+
+      - name: Run E2E tests
+        run: |
+          rm -f worldc2.db
+          ./worldc2-server -config config.yaml -no-tls &
+          sleep 3
+          timeout 180 python3 tests/e2e_test.py
+          kill %1 2>/dev/null || true
+
+      - name: Run evasion/payload tests
+        run: |
+          timeout 60 python3 tests/evasion_payload_test.py
+
+      - name: Run penetration tests
+        run: |
+          rm -f worldc2.db
+          ./worldc2-server -config config.yaml -no-tls &
+          sleep 3
+          timeout 60 python3 tests/pentest.py
+          kill %1 2>/dev/null || true
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: worldc2-server-linux
+          - goos: windows
+            goarch: amd64
+            artifact: worldc2-server-windows.exe
+          - goos: darwin
+            goarch: amd64
+            artifact: worldc2-server-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            artifact: worldc2-server-darwin-arm64
+          - goos: linux
+            goarch: amd64
+            artifact: worldc2-agent-linux
+            agent: true
+          - goos: windows
+            goarch: amd64
+            artifact: worldc2-agent-windows.exe
+            agent: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Download dependencies
+        run: cd src/go && go mod download
+
+      - name: Build ${{ matrix.artifact }}
+        run: |
+          cd src/go
+          if [ "${{ matrix.agent }}" = "true" ]; then
+            CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+              go build -ldflags="-s -w" -o ../${{ matrix.artifact }} ./cmd/agent/main.go
+          else
+            CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+              go build -ldflags="-s -w" -o ../${{ matrix.artifact }} ./cmd/server/main.go
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t worldc2-c2:latest .
+
+      - name: Run Docker container
+        run: |
+          docker run -d --name worldc2-test \
+            -p 8443:8443 -p 9090:9090 \
+            worldc2-c2:latest
+          sleep 5
+          curl -f http://localhost:9090/api/health || exit 1
+          docker stop worldc2-test
+          docker rm worldc2-test
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run security audit
+        run: python3 scripts/harden.py
+
+      - name: Check for hardcoded secrets
+        run: |
+          if grep -r "password.*admin" --include="*.yaml" --include="*.yml" . | grep -v "config.example" | grep -v "CHANGELOG"; then
+            echo "WARNING: Default credentials found in config files"
+            exit 1
+          fi

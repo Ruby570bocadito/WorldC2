@@ -1,0 +1,507 @@
+openapi: 3.0.3
+info:
+  title: WORLDC2 C2 API
+  description: Command & Control REST API for red team operations
+  version: 2.0.0
+  contact:
+    name: ruby570bocadito
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:9090
+    description: Local development
+
+components:
+  securitySchemes:
+    BasicAuth:
+      type: http
+      scheme: basic
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        active_sessions:
+          type: integer
+          example: 3
+        listeners:
+          type: integer
+          example: 4
+        uptime:
+          type: integer
+          format: int64
+          description: Unix timestamp
+
+    Session:
+      type: object
+      properties:
+        ID:
+          type: string
+          example: "a1b2c3d4e5f6..."
+        AgentID:
+          type: string
+          example: "agent-12345678"
+        Hostname:
+          type: string
+          example: "DESKTOP-ABC123"
+        OS:
+          type: string
+          example: "windows"
+        Arch:
+          type: string
+          example: "amd64"
+        Username:
+          type: string
+          example: "user"
+        IsAdmin:
+          type: boolean
+        State:
+          type: string
+          enum: [active, passive, disconnected, killed]
+        LastSeen:
+          type: string
+          format: date-time
+        TaskCount:
+          type: integer
+
+    TaskRequest:
+      type: object
+      required: [agent_id, command]
+      properties:
+        agent_id:
+          type: string
+          description: Agent ID or hostname
+        command:
+          type: string
+          description: Command to execute
+        timeout:
+          type: integer
+          default: 30
+          maximum: 300
+          description: Timeout in seconds (max 300)
+
+    TaskResult:
+      type: object
+      properties:
+        TaskId:
+          type: string
+        Output:
+          type: string
+        ExitCode:
+          type: integer
+        Success:
+          type: boolean
+        ErrorMessage:
+          type: string
+
+    BroadcastRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+
+    Credential:
+      type: object
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        domain:
+          type: string
+        host:
+          type: string
+        service:
+          type: string
+        captured:
+          type: string
+          format: date-time
+
+    FileRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        session_id:
+          type: string
+        module:
+          type: string
+        size:
+          type: integer
+        created:
+          type: string
+          format: date-time
+
+    Module:
+      type: object
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        platform:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [ps1, sh, binary, dll]
+        commands:
+          type: array
+          items:
+            type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+paths:
+  /api/health:
+    get:
+      summary: Server health check
+      tags: [System]
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /api/sessions:
+    get:
+      summary: List active sessions
+      tags: [Sessions]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of active sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Session'
+
+  /api/sessions/{id}:
+    get:
+      summary: Get session details
+      tags: [Sessions]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session details with tasks
+        '404':
+          description: Session not found
+    delete:
+      summary: Kill an agent
+      tags: [Sessions]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent killed
+        '404':
+          description: Agent not found
+
+  /api/cmd:
+    post:
+      summary: Execute command on agent
+      tags: [Commands]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+      responses:
+        '200':
+          description: Command result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResult'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Command execution failed
+
+  /api/broadcast:
+    post:
+      summary: Execute command on all agents
+      tags: [Commands]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BroadcastRequest'
+      responses:
+        '200':
+          description: Results from all agents
+
+  /api/vault:
+    get:
+      summary: List or search credentials
+      tags: [Vault]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Search query
+      responses:
+        '200':
+          description: List of credentials
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Credential'
+    post:
+      summary: Store a credential
+      tags: [Vault]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Credential'
+      responses:
+        '200':
+          description: Credential stored
+
+  /api/files:
+    get:
+      summary: List exfiltrated files
+      tags: [Files]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of files
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FileRecord'
+    post:
+      summary: Upload a file
+      tags: [Files]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_id:
+                  type: string
+                filename:
+                  type: string
+                module:
+                  type: string
+                data:
+                  type: string
+                  format: byte
+      responses:
+        '200':
+          description: File stored
+
+  /api/modules:
+    get:
+      summary: List available modules
+      tags: [Modules]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of modules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Module'
+    post:
+      summary: Register a new module
+      tags: [Modules]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Module'
+      responses:
+        '200':
+          description: Module registered
+
+  /api/modules/push:
+    post:
+      summary: Push a module to an agent
+      tags: [Modules]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [module]
+              properties:
+                module:
+                  type: string
+                agent_id:
+                  type: string
+      responses:
+        '200':
+          description: Module pushed
+
+  /api/socks:
+    get:
+      summary: List active SOCKS proxies
+      tags: [Tunneling]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of proxies
+    post:
+      summary: Start a SOCKS proxy
+      tags: [Tunneling]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_id:
+                  type: string
+                port:
+                  type: integer
+      responses:
+        '200':
+          description: Proxy started
+    delete:
+      summary: Stop a SOCKS proxy
+      tags: [Tunneling]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Proxy stopped
+
+  /api/portfwd:
+    get:
+      summary: List port forwards
+      tags: [Tunneling]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of forwards
+    post:
+      summary: Start port forward
+      tags: [Tunneling]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_id:
+                  type: string
+                local_port:
+                  type: integer
+                remote_host:
+                  type: string
+                remote_port:
+                  type: integer
+      responses:
+        '200':
+          description: Forward started
+    delete:
+      summary: Stop port forward
+      tags: [Tunneling]
+      security:
+        - BasicAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Forward stopped

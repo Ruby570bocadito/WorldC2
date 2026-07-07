@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/ctrlboty/c2/internal/proto";
+
+// Envelope is the top-level message wrapper for all C2 communication.
+// Every message is encrypted (XChaCha20-Poly1305), then serialized as Envelope.
+message Envelope {
+  uint32 id = 1;                // Message ID (monotonic per session)
+  EnvelopeType type = 2;        // Message type discriminator
+  uint64 timestamp = 3;         // Unix nano timestamp
+  bytes session_token = 4;      // Session identifier (HMAC-based)
+
+  oneof payload {
+    KeyExchange key_exchange = 10;
+    SessionInit session_init = 11;
+    Task task = 12;
+    TaskResult task_result = 13;
+    Heartbeat heartbeat = 14;
+    Acknowledge ack = 15;
+    Error error = 16;
+  }
+
+  bytes nonce = 20;             // 24-byte XChaCha20 nonce
+  bytes ciphertext = 21;        // Encrypted inner payload (binary EnvelopeInner)
+}
+
+// EnvelopeInner is the cleartext payload before encryption.
+message EnvelopeInner {
+  uint32 id = 1;
+  EnvelopeType type = 2;
+  uint64 timestamp = 3;
+  bytes session_token = 4;
+
+  oneof payload {
+    KeyExchange key_exchange = 10;
+    SessionInit session_init = 11;
+    Task task = 12;
+    TaskResult task_result = 13;
+    Heartbeat heartbeat = 14;
+    Acknowledge ack = 15;
+    Error error = 16;
+  }
+}
+
+enum EnvelopeType {
+  ENVELOPE_TYPE_UNSPECIFIED = 0;
+  ENVELOPE_TYPE_KEY_EXCHANGE = 1;
+  ENVELOPE_TYPE_SESSION_INIT = 2;
+  ENVELOPE_TYPE_TASK = 3;
+  ENVELOPE_TYPE_TASK_RESULT = 4;
+  ENVELOPE_TYPE_HEARTBEAT = 5;
+  ENVELOPE_TYPE_ACK = 6;
+  ENVELOPE_TYPE_ERROR = 7;
+  ENVELOPE_TYPE_DISCONNECT = 8;
+  ENVELOPE_TYPE_RECONNECT = 9;
+  ENVELOPE_TYPE_TUNNEL_OPEN = 10;
+  ENVELOPE_TYPE_TUNNEL_DATA = 11;
+  ENVELOPE_TYPE_TUNNEL_CLOSE = 12;
+}
+
+// KeyExchange: X25519 public key + transport negotiation.
+message KeyExchange {
+  bytes public_key = 1;         // 32-byte X25519 public key
+  repeated string transports = 2; // Supported transports (e.g., ["tcp+tls", "wss"])
+  string agent_version = 3;
+  bytes padding = 4;            // Random padding (anti-fingerprinting)
+}
+
+// SessionInit: Agent metadata sent after key exchange.
+message SessionInit {
+  string hostname = 1;
+  string os = 2;
+  string arch = 3;
+  string username = 4;
+  uint32 pid = 5;
+  bool is_admin = 6;
+  string local_ip = 7;
+  string public_ip = 8;
+  string mac_address = 9;
+  string agent_id = 10;
+  string agent_version = 11;
+}
+
+// Task: Command from server to agent.
+message Task {
+  string task_id = 1;           // Unique task identifier (UUID)
+  string command = 2;           // Command string
+  bytes payload = 3;            // Optional binary payload
+  uint32 timeout_sec = 4;       // Timeout in seconds
+  bool async = 5;               // If true, agent sends result later
+  string module = 6;            // Module to load/execute
+  uint32 channel = 7;           // Multiplexed channel ID
+}
+
+// TaskResult: Agent response to a task.
+message TaskResult {
+  string task_id = 1;
+  string output = 2;            // Text output
+  bytes data = 3;               // Binary output (files, screenshots, etc.)
+  uint32 exit_code = 4;
+  bool success = 5;
+  string error_message = 6;
+}
+
+// Heartbeat: Periodic keep-alive message.
+message Heartbeat {
+  uint64 timestamp = 1;
+  uint32 session_time_sec = 2;  // How long agent has been running
+}
+
+// Acknowledge: Generic ACK.
+message Acknowledge {
+  uint32 ack_id = 1;            // Message ID being acknowledged
+  bool success = 2;
+}
+
+// Error: Error notification.
+message Error {
+  uint32 code = 1;
+  string message = 2;
+  bytes details = 3;
+}
+
+// TunnelOpen: Open a tunnel connection through the agent.
+message TunnelOpen {
+  string tunnel_id = 1;
+  string target = 2;            // target host:port
+  uint32 channel = 3;
+}
+
+// TunnelData: Bidirectional data relay through a tunnel.
+message TunnelData {
+  string tunnel_id = 1;
+  bytes data = 2;
+  bool close = 3;               // Close signal
+}

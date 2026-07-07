@@ -1,0 +1,21 @@
+FROM golang:1.26-alpine AS builder
+
+RUN apk add --no-cache git build-base
+
+WORKDIR /app
+COPY src/go/go.mod src/go/go.sum ./
+RUN go mod download
+
+COPY src/go/ .
+
+ARG SERVER_ADDR=host.docker.internal:8443
+RUN CGO_ENABLED=1 go build -ldflags="-s -w -X 'main.DefaultServer=${SERVER_ADDR}'" -o /worldc2-agent ./cmd/agent/main.go
+
+FROM alpine:3.20
+
+RUN apk add --no-cache curl ca-certificates bash python3
+
+WORKDIR /app
+COPY --from=builder /worldc2-agent .
+
+CMD ["./worldc2-agent"]

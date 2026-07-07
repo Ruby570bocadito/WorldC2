@@ -1,0 +1,80 @@
+version: "3.8"
+
+networks:
+  worldc2-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+  c2-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: worldc2-c2-server
+    networks:
+      worldc2-network:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "8443:8443"
+      - "8445:8445"
+      - "8446:8446"
+      - "9090:9090"
+    volumes:
+      - ./data:/app/data
+      - ./loot:/app/loot
+      - ./modules:/app/modules
+    environment:
+      - WORLDC2_LOG_LEVEL=debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  agent-linux-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+      args:
+        SERVER_ADDR: "172.20.0.10:8443"
+    container_name: worldc2-agent-linux-1
+    networks:
+      worldc2-network:
+        ipv4_address: 172.20.0.20
+    depends_on:
+      c2-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  agent-linux-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+      args:
+        SERVER_ADDR: "172.20.0.10:8443"
+    container_name: worldc2-agent-linux-2
+    networks:
+      worldc2-network:
+        ipv4_address: 172.20.0.21
+    depends_on:
+      c2-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  test-runner:
+    image: python:3.12-slim
+    container_name: worldc2-test-runner
+    networks:
+      worldc2-network:
+        ipv4_address: 172.20.0.100
+    volumes:
+      - ./tests:/tests
+      - ./scripts:/scripts
+    working_dir: /tests
+    command: ["tail", "-f", "/dev/null"]
+    depends_on:
+      c2-server:
+        condition: service_healthy

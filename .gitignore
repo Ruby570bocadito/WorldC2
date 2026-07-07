@@ -1,0 +1,73 @@
+# Binaries
+worldc2-server
+worldc2-agent
+*.exe
+*.elf
+*.macho
+dist/worldc2-agent-*
+
+# Runtime
+*.db
+data/
+worldc2.db
+
+# Config with secrets
+config.yaml
+
+# Logs
+*.log
+server.log
+server.err
+
+# Payloads
+payloads/*
+!payloads/.gitkeep
+
+# Certificates (sensitive)
+certs/
+*.crt
+*.key
+*.pem
+
+# Node
+web/node_modules/
+web/.vite/
+web/dist/
+
+# Python
+scripts/__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Go
+src/go/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Operations (sensitive)
+loot/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
+
+# Test artifacts
+tests/__pycache__/
+*.coverage
+
+# Large downloads / installers
+*.tar.gz
+*.zip
+go*.linux-amd64.tar.gz
+
+# Session / temp files
+session*.txt
+*.tmp

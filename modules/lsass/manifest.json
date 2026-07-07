@@ -1,0 +1,17 @@
+{
+  "name": "lsass",
+  "version": "2.0.0",
+  "platform": "windows",
+  "arch": "amd64",
+  "description": "Evasive LSASS memory dump \u2014 direct P/Invoke MiniDumpWriteDump (no rundll32), AMSI/ETW bypass, anti-forensic cleanup",
+  "type": "ps1",
+  "commands": [
+    "lsass_dump",
+    "lsass_minidump"
+  ],
+  "files": {
+    "lsass.ps1": ""
+  },
+  "author": "ruby570bocadito",
+  "evasive": true
+}
