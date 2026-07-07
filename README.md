@@ -21,7 +21,7 @@
 
 ## 📋 Overview
 
-**WorldC2** (formerly WORLDC2) is an **enterprise-grade Command & Control platform** purpose-built for red team operations, security assessments, and adversary simulation. Engineered with a **Go-based C2 server**, **lightweight implants**, and a **Vue 3 web dashboard**, WorldC2 delivers encrypted multi-agent communication, AV/EDR evasion capabilities, SOCKS5 proxy tunneling, and real-time telemetry – all wrapped in a modern, modular architecture.
+**WorldC2** is an **enterprise-grade Command & Control platform** purpose-built for red team operations, security assessments, and adversary simulation. Engineered with a **Go-based C2 server**, **lightweight implants**, and a **Vue 3 web dashboard**, WorldC2 delivers encrypted multi-agent communication, AV/EDR evasion capabilities, SOCKS5 proxy tunneling, and real-time telemetry – all wrapped in a modern, modular architecture.
 
 > ⚠️ **AUTHORIZED USE ONLY** — This tool is designed exclusively for authorized security assessments, penetration testing, and research. Unauthorized use is prohibited.
 
