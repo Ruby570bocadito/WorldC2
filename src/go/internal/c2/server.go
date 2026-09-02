@@ -129,16 +129,34 @@ func New(cfg *config.Config, database *db.DB) *Server {
 
 // Start begins listening on all configured transports.
 func (s *Server) Start() error {
-	// Generate TLS cert if needed
-	if s.cfg.TLS.Enabled && s.cfg.TLS.AutoCert {
-		cert, err := transport.GenerateSelfSignedCert(s.cfg.Server.Host)
-		if err != nil {
-			return fmt.Errorf("generate TLS cert: %w", err)
+	// Build TLS configuration (if enabled)
+	if s.cfg.TLS.Enabled {
+		var cert tls.Certificate
+
+		if s.cfg.TLS.CertFile != "" && s.cfg.TLS.KeyFile != "" {
+			loaded, err := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+			if err != nil {
+				return fmt.Errorf("load TLS cert: %w", err)
+			}
+			cert = loaded
+			log.Printf("[TLS] Loaded certificate from %s", s.cfg.TLS.CertFile)
+		} else if s.cfg.TLS.AutoCert {
+			generated, err := transport.GenerateSelfSignedCert(s.cfg.Server.Host)
+			if err != nil {
+				return fmt.Errorf("generate TLS cert: %w", err)
+			}
+			cert = generated
+			log.Printf("[TLS] Generated self-signed certificate")
 		}
+
+		if len(cert.Certificate) == 0 {
+			return fmt.Errorf("TLS enabled but no certificate configured (set cert_file/key_file or auto_cert)")
+		}
+
 		s.tlsCert = cert
 
-		// Use mTLS if CA is available
-		if s.mtlsEnabled && s.caCert != nil && s.caKey != nil {
+		// Use mTLS only when explicitly requested (default: standard server TLS)
+		if s.cfg.TLS.MTLS && s.mtlsEnabled && s.caCert != nil && s.caKey != nil {
 			s.tlsConfig = crypto.NewMTLSServerConfig(cert, s.caCert)
 			log.Printf("[MTLS] Mutual TLS enabled — agents require client certificates")
 		} else {

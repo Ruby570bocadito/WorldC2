@@ -44,8 +44,9 @@ type APIConfig struct {
 
 // DatabaseConfig holds database connection info.
 type DatabaseConfig struct {
-	Driver string `yaml:"driver"` // "sqlite" or "postgres"
-	DSN    string `yaml:"dsn"`
+	Driver        string `yaml:"driver"` // "sqlite" or "postgres"
+	DSN           string `yaml:"dsn"`
+	EncryptionKey string `yaml:"encryption_key"` // optional master key for at-rest encryption
 }
 
 // TLSConfig holds TLS certificate configuration.
@@ -55,6 +56,7 @@ type TLSConfig struct {
 	KeyFile    string `yaml:"key_file"`
 	AutoCert   bool   `yaml:"auto_cert"`   // Auto-generate self-signed
 	MinVersion string `yaml:"min_version"` // "1.2" or "1.3"
+	MTLS       bool   `yaml:"mtls"`        // Require client certificates (mutual TLS)
 }
 
 // LoggingConfig holds logging settings.

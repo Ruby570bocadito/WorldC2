@@ -1,6 +1,9 @@
 # Binaries
 worldc2-server
 worldc2-agent
+src/go/server
+src/go/agent
+src/go/builder
 *.exe
 *.elf
 *.macho

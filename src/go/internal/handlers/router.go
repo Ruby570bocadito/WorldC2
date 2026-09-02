@@ -55,23 +55,41 @@ func (r *Router) Setup() *http.ServeMux {
 
 	// Sessions
 	mux.HandleFunc("/api/sessions", cors(auth(audit(rate(perm("sessions:list")(r.handleListSessions))))))
-	mux.HandleFunc("/api/sessions/", cors(auth(audit(rate(r.handleSessionDetail)))))
+	mux.HandleFunc("/api/sessions/", cors(auth(audit(rate(r.permMethod(map[string]string{
+		"GET":    "sessions:view",
+		"DELETE": "sessions:kill",
+	})(r.handleSessionDetail))))))
 
 	// Commands
 	mux.HandleFunc("/api/cmd", cors(auth(audit(rate(perm("commands:execute")(r.handleCommand))))))
 	mux.HandleFunc("/api/broadcast", cors(auth(audit(rate(perm("commands:broadcast")(r.handleBroadcast))))))
 
 	// Modules
-	mux.HandleFunc("/api/modules", cors(auth(audit(rate(r.handleModules)))))
-	mux.HandleFunc("/api/modules/push", cors(auth(audit(rate(r.handleModulePush)))))
-	mux.HandleFunc("/api/modules/", cors(auth(audit(rate(r.handleModuleDelete)))))
+	mux.HandleFunc("/api/modules", cors(auth(audit(rate(r.permMethod(map[string]string{
+		"GET":  "modules:list",
+		"POST": "modules:push",
+	})(r.handleModules))))))
+	mux.HandleFunc("/api/modules/push", cors(auth(audit(rate(perm("modules:push")(r.handleModulePush))))))
+	mux.HandleFunc("/api/modules/", cors(auth(audit(rate(perm("modules:delete")(r.handleModuleDelete))))))
 
 	// Infrastructure
-	mux.HandleFunc("/api/socks", cors(auth(audit(rate(r.handleSOCKS)))))
-	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.handleVault)))))
-	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.handleFiles)))))
-	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(r.handleFileDownload)))))
-	mux.HandleFunc("/api/portfwd", cors(auth(audit(rate(r.handlePortFwd)))))
+	mux.HandleFunc("/api/socks", cors(auth(audit(rate(r.permMethod(map[string]string{
+		"POST":   "socks:start",
+		"DELETE": "socks:stop",
+	})(r.handleSOCKS))))))
+	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.permMethod(map[string]string{
+		"POST": "vault:create",
+		"GET":  "vault:read",
+	})(r.handleVault))))))
+	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.permMethod(map[string]string{
+		"POST": "files:upload",
+		"GET":  "files:download",
+	})(r.handleFiles))))))
+	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(perm("files:download")(r.handleFileDownload))))))
+	mux.HandleFunc("/api/portfwd", cors(auth(audit(rate(r.permMethod(map[string]string{
+		"POST":   "portfwd:start",
+		"DELETE": "portfwd:stop",
+	})(r.handlePortFwd))))))
 
 	// Operators (admin only)
 	mux.HandleFunc("/api/operators", cors(auth(admin(audit(rate(r.handleOperators))))))
@@ -201,6 +219,31 @@ func (r *Router) requirePermission(permission string) func(http.HandlerFunc) htt
 				return
 			}
 			if !r.server.RBAC().HasPermission(role, permission) {
+				r.server.DB().LogAction(0, "auth_denied", req.Method+" "+req.URL.Path+" by "+req.Header.Get("X-Auth-User")+" ("+role+")")
+				http.Error(w, `{"error":"insufficient permissions"}`, 403)
+				return
+			}
+			next(w, req)
+		}
+	}
+}
+
+// permMethod enforces a per-method permission map. Methods not present in the map
+// are allowed (the auth middleware has already verified a valid token).
+func (r *Router) permMethod(perms map[string]string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, req *http.Request) {
+			perm, ok := perms[req.Method]
+			if !ok {
+				next(w, req)
+				return
+			}
+			role := req.Header.Get("X-Auth-Role")
+			if role == "" {
+				http.Error(w, `{"error":"authentication required"}`, 401)
+				return
+			}
+			if !r.server.RBAC().HasPermission(role, perm) {
 				r.server.DB().LogAction(0, "auth_denied", req.Method+" "+req.URL.Path+" by "+req.Header.Get("X-Auth-User")+" ("+role+")")
 				http.Error(w, `{"error":"insufficient permissions"}`, 403)
 				return
