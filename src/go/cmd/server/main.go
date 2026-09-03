@@ -40,8 +40,15 @@ func main() {
 		cfg.TLS.Enabled = false
 	}
 
-	// Open database
-	database, err := db.Open(cfg.Database.DSN)
+	// Open database (enable at-rest encryption when a master key is provided)
+	var database *db.DB
+	if key := cfg.Database.EncryptionKey; key != "" {
+		database, err = db.OpenWithEncryption(cfg.Database.DSN, []byte(key))
+	} else if key := os.Getenv("WORLDC2_DB_KEY"); key != "" {
+		database, err = db.OpenWithEncryption(cfg.Database.DSN, []byte(key))
+	} else {
+		database, err = db.Open(cfg.Database.DSN)
+	}
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
@@ -57,10 +64,11 @@ func main() {
 		}
 	}
 
-	// Fallback: create default admin if no operators in config
+	// Fallback: create default admin if no operators in config.
+	// SECURITY: this is an insecure default — warn loudly and recommend changing it.
 	if len(cfg.Operators) == 0 {
-		if err := database.CreateOperator("admin", "admin", "admin"); err != nil {
-			// Likely already exists, ignore
+		if err := database.CreateOperator("admin", "admin", "admin"); err == nil {
+			log.Printf("[SECURITY] WARNING: no operators configured — created default 'admin'/'admin' account. Change this password immediately.")
 		}
 	}
 

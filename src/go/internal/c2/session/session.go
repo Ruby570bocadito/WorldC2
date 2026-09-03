@@ -178,10 +178,10 @@ func (s *Session) OnClose(fn func()) {
 // Close shuts down the session and runs cleanup handlers.
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
-		if s.State() == StateDisconnected || s.State() == StateKilled {
-			return
+		// Preserve the "killed" state for reporting; otherwise mark disconnected.
+		if s.State() != StateKilled {
+			s.SetState(StateDisconnected)
 		}
-		s.SetState(StateDisconnected)
 
 		// Run cleanup handlers
 		for _, fn := range s.onClose {

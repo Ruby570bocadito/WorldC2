@@ -227,7 +227,8 @@ func (f *FileManager) Store(sessionID, filename, module string, data []byte) (*F
 
 	id := fmt.Sprintf("file-%x", time.Now().UnixNano())
 	safeName := filepath.Base(filename)
-	storePath := filepath.Join(f.baseDir, sessionID, safeName)
+	safeSession := filepath.Base(sessionID)
+	storePath := filepath.Join(f.baseDir, safeSession, safeName)
 
 	os.MkdirAll(filepath.Dir(storePath), 0700)
 

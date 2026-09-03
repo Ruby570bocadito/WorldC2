@@ -21,13 +21,20 @@ transport:
 database:
   driver: "sqlite"
   dsn: "data/worldc2.db"
+  # Optional master key for at-rest encryption of the credential vault.
+  # Prefer the WORLDC2_DB_KEY environment variable so the key is not on disk.
+  encryption_key: ""
 
 tls:
   enabled: true
+  # When auto_cert is true a self-signed cert is generated on startup.
+  # Otherwise provide cert_file/key_file below (generate with: make certs).
   auto_cert: false
   cert_file: "certs/server.crt"
   key_file: "certs/server.key"
   min_version: "1.3"
+  # Require agent client certificates (mutual TLS). Default: false.
+  mtls: false
 
 logging:
   level: "info"
