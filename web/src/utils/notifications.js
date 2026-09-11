@@ -1,70 +1,65 @@
-// WORLDC2 C2 - Notification System
-// Simple toast notification system for the dashboard
+// WorldC2 — toast notifications.
+// Minimal dark toasts, bottom-right, auto-dismiss after 4s.
+// Security: message is ALWAYS rendered via textContent — never innerHTML.
 
-const toasts = []
 let container = null
 
 function getContainer() {
   if (!container) {
     container = document.createElement('div')
-    container.id = 'worldc2-toasts'
-    container.style.cssText = `
-      position: fixed; top: 16px; right: 16px; z-index: 9999;
-      display: flex; flex-direction: column; gap: 8px; max-width: 360px;
-    `
+    container.className = 'toast-stack'
+    container.setAttribute('role', 'status')
+    container.setAttribute('aria-live', 'polite')
     document.body.appendChild(container)
   }
   return container
 }
 
-function createToast(message, type = 'info', duration = 4000) {
+function dismiss(toast) {
+  if (!toast || !toast.parentNode) return
+  toast.classList.remove('toast-in')
+  toast.classList.add('toast-out')
+  setTimeout(() => {
+    if (toast.parentNode) toast.parentNode.removeChild(toast)
+  }, 200)
+}
+
+function show(message, type = 'info', duration = 4000) {
+  const stack = getContainer()
+
   const toast = document.createElement('div')
-  const colors = {
-    success: { bg: '#ecfdf5', border: '#10b981', text: '#065f46', icon: '✓' },
-    error: { bg: '#fef2f2', border: '#ef4444', text: '#991b1b', icon: '✗' },
-    warning: { bg: '#fffbeb', border: '#f59e0b', text: '#92400e', icon: '⚠' },
-    info: { bg: '#eff6ff', border: '#3b82f6', text: '#1e40af', icon: 'ℹ' },
-  }
-  const c = colors[type] || colors.info
+  toast.className = 'toast toast-' + type
 
-  toast.style.cssText = `
-    background: ${c.bg}; border-left: 4px solid ${c.border};
-    padding: 12px 16px; border-radius: 6px; color: ${c.text};
-    font-size: 13px; font-family: 'Inter', sans-serif;
-    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-    animation: slideIn 0.3s ease; display: flex; align-items: center; gap: 8px;
-  `
-  toast.innerHTML = `<span style="font-weight:700">${c.icon}</span><span>${message}</span>`
+  const icon = document.createElement('span')
+  icon.className = 'toast-icon'
+  icon.textContent = type === 'ok' ? '✓' : type === 'error' ? '✕' : 'ℹ'
 
-  getContainer().appendChild(toast)
-  toasts.push(toast)
+  const text = document.createElement('span')
+  text.className = 'toast-text'
+  text.textContent = String(message) // safe by construction
 
-  // Auto remove
-  setTimeout(() => removeToast(toast), duration)
+  toast.appendChild(icon)
+  toast.appendChild(text)
+
+  // enter on next frame so the transition applies
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => toast.classList.add('toast-in'))
+  })
+
+  toast.addEventListener('click', () => dismiss(toast))
+  stack.appendChild(toast)
+
+  const timer = setTimeout(() => dismiss(toast), duration)
+  toast.addEventListener('click', () => clearTimeout(timer), { once: true })
 
   return toast
 }
 
-function removeToast(toast) {
-  if (toast.parentNode) {
-    toast.style.animation = 'slideOut 0.3s ease'
-    setTimeout(() => toast.parentNode?.removeChild(toast), 300)
-  }
+export const notify = {
+  info: (message, duration) => show(message, 'info', duration),
+  ok: (message, duration) => show(message, 'ok', duration),
+  success: (message, duration) => show(message, 'ok', duration), // alias
+  error: (message, duration) => show(message, 'error', duration),
 }
 
-// Add CSS animations
-const style = document.createElement('style')
-style.textContent = `
-  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-  @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
-`
-document.head.appendChild(style)
-
-// Export API
-window.WORLDC2 = window.WORLDC2 || {}
-window.WORLDC2.notify = {
-  success: (msg, dur) => createToast(msg, 'success', dur),
-  error: (msg, dur) => createToast(msg, 'error', dur),
-  warning: (msg, dur) => createToast(msg, 'warning', dur),
-  info: (msg, dur) => createToast(msg, 'info', dur),
-}
+export default notify

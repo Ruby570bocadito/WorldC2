@@ -1,160 +1,422 @@
 <template>
-  <div class="app">
-    <header class="header" v-if="isAuthed">
-      <div class="header-left">
-        <router-link to="/" class="logo">WORLDC2</router-link>
-        <nav class="nav">
-          <router-link to="/" class="nav-item" :class="{active:$route.path==='/'}">Dashboard</router-link>
-          <router-link to="/sessions" class="nav-item" :class="{active:$route.path.startsWith('/sessions')}">Victims</router-link>
-          <router-link to="/terminal" class="nav-item" :class="{active:$route.path==='/terminal'}">Terminal</router-link>
-          <router-link to="/modules" class="nav-item" :class="{active:$route.path==='/modules'}">Modules</router-link>
-          <router-link to="/files" class="nav-item" :class="{active:$route.path==='/files'}">Files</router-link>
-          <router-link to="/operators" class="nav-item" :class="{active:$route.path==='/operators'}">Operators</router-link>
+  <div class="app-shell">
+    <template v-if="authed">
+      <!-- sidebar -->
+      <aside class="sidebar" :class="{ open: sidebarOpen }">
+        <router-link to="/" class="brand">
+          <IconShield :size="22" class="brand-icon" />
+          <span class="brand-name">WorldC2</span>
+        </router-link>
+
+        <nav class="nav" aria-label="Primary">
+          <router-link
+            v-for="item in navItems"
+            :key="item.to"
+            :to="item.to"
+            class="nav-link"
+            :class="{ 'is-active': isActive(item) }"
+            @click="closeSidebar"
+          >
+            <component :is="item.icon" :size="18" />
+            <span>{{ item.label }}</span>
+          </router-link>
         </nav>
+
+        <div class="sidebar-foot">
+          <div class="op-chip">
+            <span class="op-avatar">{{ initial }}</span>
+            <span class="op-meta">
+              <span class="op-name">{{ user || 'operator' }}</span>
+              <span class="op-role">{{ role }}</span>
+            </span>
+          </div>
+          <button class="btn btn-ghost btn-sm logout" type="button" @click="logout">
+            <IconLogout :size="15" />
+            <span>Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      <div v-if="sidebarOpen" class="backdrop" @click="closeSidebar" />
+
+      <!-- main column -->
+      <div class="main-col">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button
+              class="icon-btn menu-btn"
+              type="button"
+              aria-label="Toggle navigation"
+              @click="sidebarOpen = !sidebarOpen"
+            >
+              <IconMenu :size="18" />
+            </button>
+            <span class="crumb">{{ pageTitle }}</span>
+          </div>
+
+          <div class="server-state" :class="online ? 'is-online' : 'is-down'" :title="stateTitle">
+            <span class="state-dot" />
+            <span class="state-label">{{ online ? 'Server online' : 'Server unreachable' }}</span>
+            <span v-if="online" class="state-meta mono">
+              {{ health.active_sessions }} sess · {{ health.listeners }} listeners
+            </span>
+          </div>
+        </header>
+
+        <main class="content">
+          <router-view />
+        </main>
       </div>
-      <div class="header-right">
-        <span v-if="connectionError" class="error-indicator" title="Connection lost">●</span>
-        <template v-else>
-          <span class="online-dot"></span>
-          <span class="online-count">{{ status.sessions || 0 }}</span>
-        </template>
-        <span class="uptime" v-if="status.uptime">{{ formatUptime(status.uptime) }}</span>
-        <span class="user-badge">{{ user }} ({{ role }})</span>
-        <button @click="logout" class="logout-btn">Logout</button>
-      </div>
-    </header>
-    <main>
-      <div v-if="loading" class="loading-overlay">
-        <div class="spinner"></div>
-        <p>Loading...</p>
-      </div>
-      <div v-else-if="connectionError" class="error-banner">
-        <p>⚠ Connection to C2 server lost. Retrying...</p>
-        <button @click="retryConnection" class="retry-btn">Retry Now</button>
-      </div>
-      <router-view v-else />
-    </main>
+    </template>
+
+    <!-- bare layout (login) -->
+    <template v-else>
+      <router-view />
+    </template>
   </div>
 </template>
 
 <script>
+import {
+  IconShield,
+  IconDashboard,
+  IconSessions,
+  IconTerminal,
+  IconFiles,
+  IconModules,
+  IconOperators,
+  IconLogout,
+  IconMenu,
+} from './components/icons.js'
+import { api } from './utils/api.js'
+
+const NAV = [
+  { to: '/', label: 'Dashboard', icon: IconDashboard, exact: true },
+  { to: '/sessions', label: 'Sessions', icon: IconSessions },
+  { to: '/terminal', label: 'Command Runner', icon: IconTerminal },
+  { to: '/modules', label: 'Modules', icon: IconModules },
+  { to: '/files', label: 'Files', icon: IconFiles },
+  { to: '/operators', label: 'Operators', icon: IconOperators },
+]
+
 export default {
+  name: 'App',
+  components: {
+    IconShield,
+    IconDashboard,
+    IconSessions,
+    IconTerminal,
+    IconFiles,
+    IconModules,
+    IconOperators,
+    IconLogout,
+    IconMenu,
+  },
   data() {
     return {
-      status: {},
+      navItems: NAV,
+      authed: !!localStorage.getItem('bty_token'),
+      sidebarOpen: false,
+      online: true,
+      health: { active_sessions: 0, listeners: 0 },
       timer: null,
-      loading: true,
-      connectionError: false,
-      retryCount: 0,
-      maxRetries: 10,
-      user: '',
-      role: ''
     }
   },
   computed: {
-    isAuthed() { return !!sessionStorage.getItem('bty_token') }
-  },
-  mounted() {
-    this.user = sessionStorage.getItem('bty_user') || ''
-    this.role = sessionStorage.getItem('bty_role') || ''
-    if (this.isAuthed) {
-      this.fetch()
-      this.timer = setInterval(() => this.fetch(), 5000)
-    } else {
-      this.loading = false
-    }
-  },
-  beforeUnmount() { clearInterval(this.timer) },
-  methods: {
-    auth() {
-      const t = sessionStorage.getItem('bty_token')
-      return t ? { Authorization: 'Bearer ' + t } : {}
+    user() {
+      return localStorage.getItem('bty_user') || ''
     },
-    async fetch() {
-      try {
-        const r = await fetch('/api/health', {
-          headers: this.auth(),
-          signal: AbortSignal.timeout(5000)
-        })
-        if (!r.ok) {
-          throw new Error(`HTTP ${r.status}`)
-        }
-        this.status = await r.json()
-        if (this.connectionError) {
-          this.connectionError = false
-          this.retryCount = 0
-        }
-        this.loading = false
-      } catch (e) {
-        console.error('Health check failed:', e)
-        this.connectionError = true
-        this.loading = false
-        this.retryCount++
-
-        if (this.retryCount >= this.maxRetries) {
-          clearInterval(this.timer)
-          setTimeout(() => {
-            this.timer = setInterval(() => this.fetch(), 5000)
-            this.retryCount = 0
-          }, 30000)
-        }
+    role() {
+      return localStorage.getItem('bty_role') || 'operator'
+    },
+    initial() {
+      return (localStorage.getItem('bty_user') || '?').charAt(0).toUpperCase()
+    },
+    pageTitle() {
+      return this.$route.meta.title || ''
+    },
+    stateTitle() {
+      if (!this.online) return 'Last health check failed'
+      return 'Active sessions: ' + this.health.active_sessions
+    },
+  },
+  watch: {
+    // localStorage is not reactive — re-evaluate on every navigation
+    $route() {
+      this.authed = !!localStorage.getItem('bty_token')
+      if (this.authed) {
+        this.startPolling()
+      } else {
+        this.stopPolling()
       }
     },
-    async retryConnection() {
-      this.retryCount = 0
-      this.loading = true
-      await this.fetch()
+  },
+  mounted() {
+    if (this.authed) {
+      this.fetchHealth()
+      this.startPolling()
+    }
+  },
+  beforeUnmount() {
+    this.stopPolling()
+  },
+  methods: {
+    isActive(item) {
+      return item.exact ? this.$route.path === item.to : this.$route.path.startsWith(item.to)
     },
-    formatUptime(ts) {
-      const diff = Date.now() / 1000 - ts
-      const hours = Math.floor(diff / 3600)
-      const mins = Math.floor((diff % 3600) / 60)
-      if (hours > 0) return `${hours}h ${mins}m`
-      return `${mins}m`
+    startPolling() {
+      if (this.timer) return
+      this.timer = setInterval(() => this.fetchHealth(), 5000)
+    },
+    stopPolling() {
+      if (this.timer) {
+        clearInterval(this.timer)
+        this.timer = null
+      }
+    },
+    async fetchHealth() {
+      try {
+        const data = await api.get('/api/health')
+        this.health = data && typeof data === 'object' ? data : {}
+        this.online = true
+      } catch {
+        this.online = false
+      }
+    },
+    closeSidebar() {
+      this.sidebarOpen = false
     },
     logout() {
-      sessionStorage.removeItem('bty_token')
-      sessionStorage.removeItem('bty_refresh')
-      sessionStorage.removeItem('bty_user')
-      sessionStorage.removeItem('bty_role')
-      sessionStorage.removeItem('bty_expires')
-      clearInterval(this.timer)
+      ;['bty_token', 'bty_refresh', 'bty_expires', 'bty_user', 'bty_role'].forEach((k) =>
+        localStorage.removeItem(k)
+      )
+      this.stopPolling()
+      this.authed = false
       this.$router.push('/login')
-    }
-  }
+    },
+  },
 }
 </script>
 
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Inter',sans-serif;background:#f8f9fa;color:#1a1a2e}
-.app{min-height:100vh;display:flex;flex-direction:column}
-.header{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:56px;background:#fff;border-bottom:1px solid #e5e7eb;position:sticky;top:0;z-index:100}
-.header-left{display:flex;align-items:center;gap:32px}
-.logo{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;color:#059669;text-decoration:none;letter-spacing:-1px}
-.nav{display:flex;gap:4px}
-.nav-item{padding:6px 14px;border-radius:6px;font-size:13px;font-weight:500;color:#6b7280;text-decoration:none;transition:all .15s}
-.nav-item:hover{background:#f3f4f6;color:#1f2937}
-.nav-item.active{background:#ecfdf5;color:#059669;font-weight:600}
-.header-right{display:flex;align-items:center;gap:12px}
-.online-dot{width:8px;height:8px;border-radius:50%;background:#10b981;animation:pulse 2s infinite}
-.online-count{font-size:13px;color:#6b7280;font-family:'JetBrains Mono',monospace}
-.uptime{font-size:12px;color:#9ca3af;font-family:'JetBrains Mono',monospace}
-.user-badge{font-size:12px;color:#6b7280;font-family:'JetBrains Mono',monospace;background:#f3f4f6;padding:3px 10px;border-radius:6px}
-.error-indicator{width:8px;height:8px;border-radius:50%;background:#ef4444;animation:pulse-error 1s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-@keyframes pulse-error{0%,100%{opacity:1}50%{opacity:.2}}
-.logout-btn{font-size:12px;color:#9ca3af;background:none;border:1px solid #e5e7eb;padding:4px 12px;border-radius:6px;cursor:pointer}
-.logout-btn:hover{color:#ef4444;border-color:#fecaca}
-main{flex:1;padding:24px;max-width:1280px;width:100%;margin:0 auto}
+<style scoped>
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+}
 
-.loading-overlay{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px}
-.spinner{width:40px;height:40px;border:3px solid #e5e7eb;border-top-color:#059669;border-radius:50%;animation:spin 0.8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.loading-overlay p{color:#6b7280;font-size:14px}
+/* ---------- sidebar ---------- */
+.sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 230px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  z-index: 60;
+}
 
-.error-banner{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:16px 24px;text-align:center;margin:20px 0}
-.error-banner p{color:#dc2626;font-size:14px;margin-bottom:12px}
-.retry-btn{background:#dc2626;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500}
-.retry-btn:hover{background:#b91c1c}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+  flex-shrink: 0;
+}
+.brand:hover { color: var(--text); }
+.brand-icon { color: var(--accent); }
+.brand-name {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.nav {
+  flex: 1;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 13.5px;
+  border: 1px solid transparent;
+  transition: color var(--speed), background var(--speed), border-color var(--speed);
+}
+.nav-link:hover { color: var(--text); background: var(--surface-2); }
+.nav-link.is-active {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: rgba(110, 123, 242, 0.28);
+}
+.nav-link.is-active .icon { color: var(--accent); }
+
+.sidebar-foot {
+  padding: 12px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.op-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  min-width: 0;
+}
+.op-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(110, 123, 242, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.op-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+.op-name {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.op-role {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.logout { justify-content: flex-start; }
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 55;
+}
+
+/* ---------- main column ---------- */
+.main-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-left: 230px;
+  min-height: 100vh;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 24px;
+  background: rgba(11, 12, 15, 0.82);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.menu-btn { display: none; }
+.crumb {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.server-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  white-space: nowrap;
+}
+.state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex-shrink: 0;
+}
+.server-state.is-online { color: var(--muted); }
+.server-state.is-online .state-dot {
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(63, 182, 139, 0.55);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+.server-state.is-down { color: var(--danger); }
+.server-state.is-down .state-dot {
+  background: var(--danger);
+  box-shadow: 0 0 6px rgba(229, 72, 77, 0.55);
+}
+.state-meta { color: var(--faint); font-size: 11.5px; }
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.content {
+  flex: 1;
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 28px 32px 48px;
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 900px) {
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .main-col { margin-left: 0; }
+  .menu-btn { display: inline-flex; }
+  .content { padding: 20px 16px 40px; }
+  .state-meta { display: none; }
+}
 </style>
