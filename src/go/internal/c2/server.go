@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,17 +18,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Ruby570bocadito/WorldC2/src/go/internal/config"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/auth"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2/session"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/config"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/crypto"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/db"
-	"github.com/Ruby570bocadito/WorldC2/src/go/internal/proto"
-	"github.com/Ruby570bocadito/WorldC2/src/go/internal/transport"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/logger"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/module"
-	"github.com/Ruby570bocadito/WorldC2/src/go/internal/auth"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/proto"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/reporting"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/siem"
-	"github.com/Ruby570bocadito/WorldC2/src/go/internal/logger"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/transport"
 	protobuf "google.golang.org/protobuf/proto"
 )
 
@@ -49,8 +50,8 @@ type Server struct {
 	log *logger.Logger
 
 	// mTLS
-	caCert  *x509.Certificate
-	caKey   *ecdsa.PrivateKey
+	caCert      *x509.Certificate
+	caKey       *ecdsa.PrivateKey
 	mtlsEnabled bool
 
 	// Multi-transport listeners
@@ -72,24 +73,38 @@ type Server struct {
 
 	quit chan struct{}
 	wg   sync.WaitGroup
+
+	// startTime records when the server was created (for uptime reporting).
+	startTime time.Time
 }
 
 // SetAPIMux sets a custom API mux (used to avoid circular imports).
 func (s *Server) SetAPIMux(mux *http.ServeMux) { s.apiMux = mux }
 
+// mustRandom returns n cryptographically secure random bytes or panics.
+// Silent zero-filled keys would be catastrophic (forgeable HMACs, guessable
+// secrets), so a crypto/rand failure is treated as fatal.
+func mustRandom(n int) []byte {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
+	}
+	return b
+}
+
 // New creates a new C2 server.
 func New(cfg *config.Config, database *db.DB) *Server {
 	// Generate a random HMAC key for module verification at startup
-	moduleHMACKey := make([]byte, 32)
-	rand.Read(moduleHMACKey)
+	moduleHMACKey := mustRandom(32)
 
 	// Load or create persistent JWT secret
 	jwtSecret, err := database.GetSecret("jwt_signing_key")
 	if err != nil {
 		// Generate new secret and persist it
-		jwtSecret = make([]byte, 32)
-		rand.Read(jwtSecret)
-		database.SetSecret("jwt_signing_key", jwtSecret)
+		jwtSecret = mustRandom(32)
+		if serr := database.SetSecret("jwt_signing_key", jwtSecret); serr != nil {
+			log.Printf("[AUTH] WARNING: could not persist JWT signing key: %v", serr)
+		}
 		log.Println("[AUTH] Generated new JWT signing key")
 	} else {
 		log.Println("[AUTH] Loaded existing JWT signing key")
@@ -124,37 +139,67 @@ func New(cfg *config.Config, database *db.DB) *Server {
 		siem:         siem.NewSIEMForwarder(1024),
 		apiServer:    nil,
 		quit:         make(chan struct{}),
+		startTime:    time.Now(),
 	}
 }
 
 // Start begins listening on all configured transports.
 func (s *Server) Start() error {
-	// Generate TLS cert if needed
-	if s.cfg.TLS.Enabled && s.cfg.TLS.AutoCert {
-		cert, err := transport.GenerateSelfSignedCert(s.cfg.Server.Host)
-		if err != nil {
-			return fmt.Errorf("generate TLS cert: %w", err)
-		}
-		s.tlsCert = cert
-
-		// Use mTLS if CA is available
-		if s.mtlsEnabled && s.caCert != nil && s.caKey != nil {
-			s.tlsConfig = crypto.NewMTLSServerConfig(cert, s.caCert)
-			log.Printf("[MTLS] Mutual TLS enabled — agents require client certificates")
-		} else {
-			s.tlsConfig = transport.NewTLSConfig(cert)
+	// Configure TLS. Fail hard instead of silently falling back to
+	// plaintext when the operator asked for TLS but no certificate is
+	// available.
+	if s.cfg.TLS.Enabled {
+		switch {
+		case s.cfg.TLS.CertFile != "" && s.cfg.TLS.KeyFile != "":
+			cert, err := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+			if err != nil {
+				return fmt.Errorf("load TLS cert/key: %w", err)
+			}
+			s.tlsCert = cert
+			s.tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			}
+			log.Printf("[TLS] Loaded certificate from %s", s.cfg.TLS.CertFile)
+		case s.cfg.TLS.AutoCert:
+			cert, err := transport.GenerateSelfSignedCert(s.cfg.Server.Host)
+			if err != nil {
+				return fmt.Errorf("generate TLS cert: %w", err)
+			}
+			s.tlsCert = cert
+			// Use mTLS if CA is available
+			if s.mtlsEnabled && s.caCert != nil && s.caKey != nil {
+				s.tlsConfig = crypto.NewMTLSServerConfig(cert, s.caCert)
+				log.Printf("[MTLS] Mutual TLS enabled — agents require client certificates")
+			} else {
+				s.tlsConfig = transport.NewTLSConfig(cert)
+			}
+		default:
+			return fmt.Errorf("tls.enabled=true but no certificate configured: set tls.auto_cert=true or tls.cert_file/tls.key_file")
 		}
 	}
 
-	// Start REST API using modular handlers
+	// Start REST API using modular handlers. Bind synchronously so a
+	// busy port fails fast with a clear error instead of leaving the
+	// server running without a control API.
 	apiMux := s.setupAPI()
 	apiAddr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.API.Port)
-	apiServer := &http.Server{Addr: apiAddr, Handler: apiMux}
+	apiLn, err := net.Listen("tcp", apiAddr)
+	if err != nil {
+		return fmt.Errorf("API listen on %s: %w", apiAddr, err)
+	}
+	apiServer := &http.Server{
+		Handler:           apiMux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	s.apiServer = apiServer
 
 	go func() {
 		log.Printf("[API] Listening on %s", apiAddr)
-		if err := apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := apiServer.Serve(apiLn); err != nil && err != http.ErrServerClosed {
 			log.Printf("[API] Error: %v", err)
 		}
 	}()
@@ -162,24 +207,28 @@ func (s *Server) Start() error {
 	// Start TCP/TLS C2 listener
 	tcpAddr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 
-	var tcpListener net.Listener
-	var err error
-
 	if s.cfg.TLS.Enabled && s.tlsConfig != nil {
-		tcpListener, err = tls.Listen("tcp", tcpAddr, s.tlsConfig)
+		tcpListener, err := tls.Listen("tcp", tcpAddr, s.tlsConfig)
+		if err != nil {
+			return fmt.Errorf("TCP listen: %w", err)
+		}
 		log.Printf("[TCP+TLS] Listening on %s", tcpAddr)
+		s.listeners = append(s.listeners, tcpListener)
+		s.wg.Add(1)
+		go s.acceptLoop(tcpListener, "tcp")
 	} else {
-		tcpListener, err = net.Listen("tcp", tcpAddr)
+		if s.cfg.TLS.Enabled {
+			log.Printf("[TCP] WARNING: tls.enabled=true but no TLS config could be built — listening in PLAINTEXT on %s", tcpAddr)
+		}
+		tcpListener, err := net.Listen("tcp", tcpAddr)
+		if err != nil {
+			return fmt.Errorf("TCP listen: %w", err)
+		}
 		log.Printf("[TCP] Listening on %s", tcpAddr)
+		s.listeners = append(s.listeners, tcpListener)
+		s.wg.Add(1)
+		go s.acceptLoop(tcpListener, "tcp")
 	}
-
-	if err != nil {
-		return fmt.Errorf("TCP listen: %w", err)
-	}
-	s.listeners = append(s.listeners, tcpListener)
-	s.wg.Add(1)
-	go s.acceptLoop(tcpListener, "tcp")
-
 	// Start HTTPS long-poll listener
 	httpAddr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Transport.HTTPPort)
 	var httpListener *transport.HTTPListener
@@ -243,6 +292,7 @@ func (s *Server) Start() error {
 func (s *Server) acceptLoop(listener net.Listener, transportName string) {
 	defer s.wg.Done()
 
+	backoff := 100 * time.Millisecond
 	for {
 		select {
 		case <-s.quit:
@@ -256,9 +306,16 @@ func (s *Server) acceptLoop(listener net.Listener, transportName string) {
 			case <-s.quit:
 				return
 			default:
+				// A broken-but-open listener would spin at 100%% CPU;
+				// back off and keep retrying until quit.
+				time.Sleep(backoff)
+				if backoff < time.Second {
+					backoff *= 2
+				}
 				continue
 			}
 		}
+		backoff = 100 * time.Millisecond
 
 		s.wg.Add(1)
 		go func() {
@@ -323,6 +380,9 @@ func (s *Server) SIEM() *siem.SIEMForwarder { return s.siem }
 
 // ListenerCount returns the number of active listeners.
 func (s *Server) ListenerCount() int { return len(s.listeners) }
+
+// UptimeSeconds returns seconds elapsed since the server was created.
+func (s *Server) UptimeSeconds() int64 { return int64(time.Since(s.startTime).Seconds()) }
 
 // ModuleStore returns the module store.
 func (s *Server) ModuleStore() *module.Store { return s.moduleStore }
@@ -404,11 +464,18 @@ func (s *Server) CreateTask(agentID, command string, timeoutSec uint32) (*proto.
 	}
 
 	select {
-	case result := <-resultCh:
+	case result, ok := <-resultCh:
+		if !ok {
+			// Session closed while the task was pending: the
+			// channel delivers the zero value with ok=false.
+			return nil, fmt.Errorf("session closed before task completed")
+		}
 		if result != nil {
 			s.db.UpdateTaskResult(taskID, result.Output, int(result.ExitCode), result.Success)
 		}
 		return result, nil
+	case <-sess.Done():
+		return nil, fmt.Errorf("session closed before task completed")
 	case <-time.After(timeout):
 		sess.ResolveTask(taskID, nil)
 		s.db.UpdateTaskResult(taskID, "timeout", -1, false)
@@ -458,17 +525,43 @@ func (s *Server) ActiveSessions() int {
 	return count
 }
 
+// resolveSession finds a session by map key, agent ID, hostname or session ID.
+// Live sessions are preferred over stale ones from previous connections.
+func (s *Server) resolveSession(agentID string) *session.Session {
+	if val, ok := s.sessions.Load(agentID); ok {
+		return val.(*session.Session)
+	}
+	var live, fallback *session.Session
+	s.sessions.Range(func(k, v interface{}) bool {
+		sess := v.(*session.Session)
+		if sess.AgentID == agentID || sess.Hostname == agentID || sess.ID == agentID {
+			if sess.IsActive() && live == nil {
+				live = sess
+				return false
+			}
+			if fallback == nil {
+				fallback = sess
+			}
+		}
+		return true
+	})
+	if live != nil {
+		return live
+	}
+	return fallback
+}
+
 // KillAgent kills a specific agent session.
 func (s *Server) KillAgent(agentID string) error {
-	val, ok := s.sessions.Load(agentID)
-	if !ok {
+	sess := s.resolveSession(agentID)
+	if sess == nil {
 		return fmt.Errorf("agent not found")
 	}
-	sess := val.(*session.Session)
-	sess.SetState(session.StateKilled)
 	sess.SendEnvelope(proto.EnvelopeType_ENVELOPE_TYPE_DISCONNECT, nil)
+	sess.SetState(session.StateKilled)
 	sess.Close()
 	s.db.UpdateSessionState(sess.ID, "killed")
+	s.sessions.Delete(sess.ID)
 
 	s.siem.Forward(siem.SIEMEvent{
 		EventType: "agent_killed",
@@ -555,11 +648,27 @@ func (s *Server) handleConnection(conn net.Conn, transportName string) {
 		},
 	})
 
+	// Enforce the configured session cap.
+	if s.cfg.Server.MaxSessions > 0 {
+		count := 0
+		s.sessions.Range(func(_, _ interface{}) bool { count++; return true })
+		if count >= int(s.cfg.Server.MaxSessions) {
+			log.Printf("[C2/%s] Rejected session from %s: max_sessions (%d) reached",
+				transportName, remoteAddr, s.cfg.Server.MaxSessions)
+			return
+		}
+	}
+
 	s.sessions.Store(sess.ID, sess)
 	sess.SetState(session.StateActive)
 
 	s.handleMessageLoop(sess)
 
+	// Remove the session from the map so dead entries never accumulate
+	// and task routing never resolves a stale session.
+	if cur, ok := s.sessions.Load(sess.ID); ok && cur == interface{}(sess) {
+		s.sessions.Delete(sess.ID)
+	}
 	s.db.UpdateSessionState(sess.ID, "disconnected")
 	log.Printf("[C2/%s] Session ended: %s", transportName, sess.ID)
 }
@@ -607,7 +716,7 @@ func (s *Server) handleKeyExchange(sess *session.Session) error {
 		Id:        2,
 		Type:      proto.EnvelopeType_ENVELOPE_TYPE_KEY_EXCHANGE,
 		Timestamp: uint64(time.Now().UnixNano()),
-		Payload:   &proto.EnvelopeInner_KeyExchange{KeyExchange: &proto.KeyExchange{
+		Payload: &proto.EnvelopeInner_KeyExchange{KeyExchange: &proto.KeyExchange{
 			PublicKey: serverKP.PublicKey[:], Padding: salt,
 		}},
 	}
@@ -667,7 +776,10 @@ func (s *Server) handleMessageLoop(sess *session.Session) {
 		switch inner.Type {
 		case proto.EnvelopeType_ENVELOPE_TYPE_HEARTBEAT:
 			sess.Touch()
-			s.db.UpdateSessionLastSeen(sess.ID)
+			// Debounce: one DB write per agent per minute at most.
+			if sess.ShouldUpdateDB(time.Minute) {
+				s.db.UpdateSessionLastSeen(sess.ID)
+			}
 
 		case proto.EnvelopeType_ENVELOPE_TYPE_TASK_RESULT:
 			if result := inner.GetTaskResult(); result != nil {
@@ -723,6 +835,12 @@ func (s *Server) cleanupStaleSessions() {
 				sess := value.(*session.Session)
 				if sess.IsStale(s.cfg.Server.SessionTimeout) {
 					sess.Close()
+					// Drop the dead entry so the map does not
+					// grow without bound and lookups cannot
+					// resolve a stale session for an agent ID.
+					if cur, ok := s.sessions.Load(key); ok && cur == value {
+						s.sessions.Delete(key)
+					}
 				}
 				return true
 			})
@@ -740,7 +858,12 @@ func (s *Server) setupAPI() *http.ServeMux {
 		mux = http.NewServeMux()
 	}
 
-	// Serve SPA frontend from web/dist/ if it exists
+	// Serve SPA frontend from web/dist/ if it exists. When the mux was
+	// injected externally the handlers package already registered the
+	// SPA route on it — registering "/" twice on the same mux panics.
+	if s.apiMux != nil {
+		return mux
+	}
 	distPath := s.findWebDist()
 	if distPath != "" {
 		fileServer := http.FileServer(http.Dir(distPath))

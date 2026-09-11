@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -225,9 +226,17 @@ func (f *FileManager) Store(sessionID, filename, module string, data []byte) (*F
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	// sessionID comes from API requests — reject traversal attempts so the
+	// store path can never escape the loot directory.
+	saneSession := filepath.Base(sessionID)
+	if saneSession == "." || saneSession == ".." || saneSession == "/" ||
+		strings.ContainsAny(saneSession, `\..:/`) {
+		return nil, fmt.Errorf("invalid session id %q", sessionID)
+	}
+
 	id := fmt.Sprintf("file-%x", time.Now().UnixNano())
 	safeName := filepath.Base(filename)
-	storePath := filepath.Join(f.baseDir, sessionID, safeName)
+	storePath := filepath.Join(f.baseDir, saneSession, safeName)
 
 	os.MkdirAll(filepath.Dir(storePath), 0700)
 
@@ -299,13 +308,13 @@ type PortFwdManager struct {
 
 // PortForward represents a single port forward rule.
 type PortForward struct {
-	ID        string
-	LocalPort int
+	ID         string
+	LocalPort  int
 	RemoteHost string
 	RemotePort int
-	SessionID string
-	listener  net.Listener
-	running   bool
+	SessionID  string
+	listener   net.Listener
+	running    bool
 }
 
 // NewPortFwdManager creates a new port forwarding manager.

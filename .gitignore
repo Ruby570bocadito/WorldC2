@@ -71,3 +71,9 @@ go*.linux-amd64.tar.gz
 # Session / temp files
 session*.txt
 *.tmp
+
+# Compiled artifacts (never commit binaries)
+src/go/server
+src/go/worldc2-server
+src/go/worldc2-agent
+src/go/*.db

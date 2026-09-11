@@ -56,12 +56,12 @@ func TestSessionStateTransitions(t *testing.T) {
 
 func TestSessionTouch(t *testing.T) {
 	sess := NewSession(nil, "tcp")
-	originalLastSeen := sess.LastSeen
+	originalLastSeen := sess.LastSeenTime()
 
 	time.Sleep(10 * time.Millisecond)
 	sess.Touch()
 
-	if !sess.LastSeen.After(originalLastSeen) {
+	if !sess.LastSeenTime().After(originalLastSeen) {
 		t.Error("Touch should update LastSeen")
 	}
 }
@@ -74,11 +74,13 @@ func TestSessionIsStale(t *testing.T) {
 		t.Error("Fresh session should not be stale")
 	}
 
-	// Set LastSeen to 10 minutes ago
-	sess.LastSeen = time.Now().Add(-10 * time.Minute)
-
-	if !sess.IsStale(5 * time.Minute) {
-		t.Error("Session should be stale after 10 minutes with 5 min timeout")
+	// Backdate last seen by 10 minutes (atomic accessor, race-free)
+	sess.Touch()
+	// Touch with an old timestamp via direct store is not exported; simulate
+	// staleness by waiting is impractical — use a tiny timeout instead.
+	time.Sleep(15 * time.Millisecond)
+	if !sess.IsStale(10 * time.Millisecond) {
+		t.Error("Session should be stale when last seen is older than timeout")
 	}
 }
 
@@ -258,8 +260,12 @@ func (m *MockConn) Close() error {
 	return nil
 }
 
-func (m *MockConn) LocalAddr() net.Addr  { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8443} }
-func (m *MockConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345} }
+func (m *MockConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8443}
+}
+func (m *MockConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+}
 
 func (m *MockConn) SetDeadline(t time.Time) error      { return nil }
 func (m *MockConn) SetReadDeadline(t time.Time) error  { return nil }

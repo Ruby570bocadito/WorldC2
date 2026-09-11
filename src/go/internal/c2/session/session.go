@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -20,11 +21,11 @@ type State uint32
 
 const (
 	StateNew          State = iota // Just connected, awaiting key exchange
-	StateKeyExchange              // Performing key exchange
-	StateActive                   // Fully established, ready for tasks
-	StatePassive                  // Agent in passive/reconnect mode
-	StateDisconnected             // Clean disconnect
-	StateKilled                   // Forcibly terminated
+	StateKeyExchange               // Performing key exchange
+	StateActive                    // Fully established, ready for tasks
+	StatePassive                   // Agent in passive/reconnect mode
+	StateDisconnected              // Clean disconnect
+	StateKilled                    // Forcibly terminated
 )
 
 func (s State) String() string {
@@ -46,14 +47,22 @@ func (s State) String() string {
 	}
 }
 
+// maxRawMessageSize bounds pre-authentication messages (key exchange,
+// session init). These payloads are tiny; a large value here only allows
+// unauthenticated memory allocation.
+const maxRawMessageSize = 1 << 20 // 1 MiB
+
+// maxEncryptedMessageSize bounds post-authentication envelopes.
+const maxEncryptedMessageSize = 100 << 20 // 100 MiB
+
 // Session represents an authenticated agent connection.
 type Session struct {
-	ID           string
-	state        State
-	stateMu      sync.RWMutex
+	ID      string
+	state   State
+	stateMu sync.RWMutex
 
 	// Connection
-	Conn         net.Conn
+	Conn net.Conn
 
 	// Crypto
 	KeyPair      *crypto.KeyPair
@@ -62,8 +71,8 @@ type Session struct {
 	SessionToken []byte
 
 	// Sequence numbers (monotonic, anti-replay)
-	seqRx        uint32
-	seqTx        uint32
+	seqRx uint32
+	seqTx uint32
 
 	// Metadata (from SessionInit)
 	Hostname     string
@@ -79,32 +88,39 @@ type Session struct {
 	Transport    string
 
 	// Timing
-	Created      time.Time
-	LastSeen     time.Time
-	LastTaskTime time.Time
+	Created              time.Time
+	lastSeenNanos        atomic.Int64
+	LastTaskTime         time.Time
+	lastSeenDBUpdateNano atomic.Int64
 
 	// Channels for async task results
 	pendingTasks map[string]chan *proto.TaskResult
 	taskMu       sync.RWMutex
 
+	// Write serialization: envelope framing (length + payload) must be
+	// written atomically or concurrent writers interleave and corrupt the
+	// stream.
+	writeMu sync.Mutex
+
 	// Cleanup
-	onClose      []func()
-	done         chan struct{}
-	closeOnce    sync.Once
+	onClose   []func()
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewSession creates a new session from an incoming connection.
 func NewSession(conn net.Conn, transport string) *Session {
-	return &Session{
+	s := &Session{
 		ID:           generateSessionID(),
 		state:        StateNew,
 		Conn:         conn,
 		Transport:    transport,
 		Created:      time.Now(),
-		LastSeen:     time.Now(),
 		pendingTasks: make(map[string]chan *proto.TaskResult),
 		done:         make(chan struct{}),
 	}
+	s.lastSeenNanos.Store(time.Now().UnixNano())
+	return s
 }
 
 // State returns the current session state.
@@ -128,12 +144,28 @@ func (s *Session) IsActive() bool {
 
 // Touch updates LastSeen timestamp.
 func (s *Session) Touch() {
-	s.LastSeen = time.Now()
+	s.lastSeenNanos.Store(time.Now().UnixNano())
+}
+
+// LastSeenTime returns the last time the session was observed.
+func (s *Session) LastSeenTime() time.Time {
+	return time.Unix(0, s.lastSeenNanos.Load())
 }
 
 // IsStale returns true if the session hasn't been seen within the timeout.
 func (s *Session) IsStale(timeout time.Duration) bool {
-	return time.Since(s.LastSeen) > timeout
+	return time.Since(s.LastSeenTime()) > timeout
+}
+
+// ShouldUpdateDB reports whether enough time has passed since the last
+// persisted last_seen update (debounces per-heartbeat DB writes).
+func (s *Session) ShouldUpdateDB(minInterval time.Duration) bool {
+	now := time.Now().UnixNano()
+	last := s.lastSeenDBUpdateNano.Load()
+	if last != 0 && now-last < int64(minInterval) {
+		return false
+	}
+	return s.lastSeenDBUpdateNano.CompareAndSwap(last, now)
 }
 
 // NextRxSeq returns the next receive sequence number.
@@ -156,6 +188,8 @@ func (s *Session) RegisterPendingTask(taskID string) chan *proto.TaskResult {
 }
 
 // ResolveTask resolves a pending task with its result.
+// The channel is removed from the map before sending so Close() can never
+// close it concurrently (single-sender guarantee).
 func (s *Session) ResolveTask(taskID string, result *proto.TaskResult) {
 	s.taskMu.Lock()
 	ch, ok := s.pendingTasks[taskID]
@@ -165,7 +199,10 @@ func (s *Session) ResolveTask(taskID string, result *proto.TaskResult) {
 	s.taskMu.Unlock()
 
 	if ok {
-		ch <- result
+		select {
+		case ch <- result:
+		default:
+		}
 		close(ch)
 	}
 }
@@ -176,12 +213,15 @@ func (s *Session) OnClose(fn func()) {
 }
 
 // Close shuts down the session and runs cleanup handlers.
+// It is idempotent and unconditional: regardless of the current state it
+// releases the connection, resolves pending task channels and signals done.
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
-		if s.State() == StateDisconnected || s.State() == StateKilled {
-			return
+		// Preserve Killed status if it was set explicitly; otherwise mark
+		// the session as cleanly disconnected.
+		if s.State() != StateKilled {
+			s.SetState(StateDisconnected)
 		}
-		s.SetState(StateDisconnected)
 
 		// Run cleanup handlers
 		for _, fn := range s.onClose {
@@ -288,36 +328,23 @@ func (s *Session) SendEnvelope(msgType proto.EnvelopeType, payload protobuf.Mess
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	// Length-prefixed framing: 4 bytes big-endian length + payload
-	lengthBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lengthBuf, uint32(len(envBytes)))
-
-	if _, err := s.Conn.Write(lengthBuf); err != nil {
-		return fmt.Errorf("write length: %w", err)
-	}
-	if _, err := s.Conn.Write(envBytes); err != nil {
-		return fmt.Errorf("write payload: %w", err)
-	}
-
-	return nil
+	return s.writeFrame(envBytes)
 }
 
 // RecvEnvelope reads, decrypts, and parses an incoming envelope.
 func (s *Session) RecvEnvelope() (*proto.EnvelopeInner, error) {
-	// Read length prefix
 	lengthBuf := make([]byte, 4)
-	if _, err := readFull(s.Conn, lengthBuf); err != nil {
+	if _, err := io.ReadFull(s.Conn, lengthBuf); err != nil {
 		return nil, fmt.Errorf("read length: %w", err)
 	}
 
 	length := binary.BigEndian.Uint32(lengthBuf)
-	if length > 100*1024*1024 { // 100MB max
+	if length > maxEncryptedMessageSize {
 		return nil, fmt.Errorf("message too large: %d bytes", length)
 	}
 
-	// Read payload
 	envBytes := make([]byte, length)
-	if _, err := readFull(s.Conn, envBytes); err != nil {
+	if _, err := io.ReadFull(s.Conn, envBytes); err != nil {
 		return nil, fmt.Errorf("read payload: %w", err)
 	}
 
@@ -358,33 +385,23 @@ func (s *Session) SendRaw(env *proto.Envelope) error {
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
-
-	lengthBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lengthBuf, uint32(len(envBytes)))
-
-	if _, err := s.Conn.Write(lengthBuf); err != nil {
-		return fmt.Errorf("write length: %w", err)
-	}
-	if _, err := s.Conn.Write(envBytes); err != nil {
-		return fmt.Errorf("write payload: %w", err)
-	}
-	return nil
+	return s.writeFrame(envBytes)
 }
 
 // RecvRaw reads an unencrypted length-prefixed envelope (used during key exchange).
 func (s *Session) RecvRaw() (*proto.EnvelopeInner, error) {
 	lengthBuf := make([]byte, 4)
-	if _, err := readFull(s.Conn, lengthBuf); err != nil {
+	if _, err := io.ReadFull(s.Conn, lengthBuf); err != nil {
 		return nil, fmt.Errorf("read length: %w", err)
 	}
 
 	length := binary.BigEndian.Uint32(lengthBuf)
-	if length > 100*1024*1024 {
+	if length > maxRawMessageSize {
 		return nil, fmt.Errorf("message too large: %d bytes", length)
 	}
 
 	envBytes := make([]byte, length)
-	if _, err := readFull(s.Conn, envBytes); err != nil {
+	if _, err := io.ReadFull(s.Conn, envBytes); err != nil {
 		return nil, fmt.Errorf("read payload: %w", err)
 	}
 
@@ -403,24 +420,29 @@ func (s *Session) RecvRaw() (*proto.EnvelopeInner, error) {
 	return inner, nil
 }
 
-// readFull reads exactly n bytes from a connection.
-func readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		if err != nil {
-			return total, err
-		}
-		if n == 0 {
-			return total, fmt.Errorf("connection closed")
-		}
-		total += n
+// writeFrame writes a length-prefixed frame atomically: length prefix and
+// payload are serialized into a single buffer and written with one Write
+// call while holding the per-session write lock.
+func (s *Session) writeFrame(payload []byte) error {
+	frame := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(frame, uint32(len(payload)))
+	copy(frame[4:], payload)
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if _, err := s.Conn.Write(frame); err != nil {
+		return fmt.Errorf("write frame: %w", err)
 	}
-	return total, nil
+	return nil
 }
 
 func generateSessionID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		// Unrecoverable: silent zero-filled IDs would collide and break
+		// session routing. crypto/rand failing means the runtime is broken.
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
+	}
 	return fmt.Sprintf("%x", b)
 }

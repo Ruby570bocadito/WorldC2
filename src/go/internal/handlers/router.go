@@ -3,6 +3,7 @@ package handlers
 import (
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2"
@@ -55,35 +56,35 @@ func (r *Router) Setup() *http.ServeMux {
 
 	// Sessions
 	mux.HandleFunc("/api/sessions", cors(auth(audit(rate(perm("sessions:list")(r.handleListSessions))))))
-	mux.HandleFunc("/api/sessions/", cors(auth(audit(rate(r.handleSessionDetail)))))
+	mux.HandleFunc("/api/sessions/", cors(auth(audit(rate(r.permByMethod("sessions:view", "sessions:kill")(r.handleSessionDetail))))))
 
 	// Commands
 	mux.HandleFunc("/api/cmd", cors(auth(audit(rate(perm("commands:execute")(r.handleCommand))))))
 	mux.HandleFunc("/api/broadcast", cors(auth(audit(rate(perm("commands:broadcast")(r.handleBroadcast))))))
 
 	// Modules
-	mux.HandleFunc("/api/modules", cors(auth(audit(rate(r.handleModules)))))
-	mux.HandleFunc("/api/modules/push", cors(auth(audit(rate(r.handleModulePush)))))
-	mux.HandleFunc("/api/modules/", cors(auth(audit(rate(r.handleModuleDelete)))))
+	mux.HandleFunc("/api/modules", cors(auth(audit(rate(r.permByMethod("modules:list", "modules:push")(r.handleModules))))))
+	mux.HandleFunc("/api/modules/push", cors(auth(audit(rate(perm("modules:push")(r.handleModulePush))))))
+	mux.HandleFunc("/api/modules/", cors(auth(audit(rate(perm("modules:delete")(r.handleModuleDelete))))))
 
 	// Infrastructure
-	mux.HandleFunc("/api/socks", cors(auth(audit(rate(r.handleSOCKS)))))
-	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.handleVault)))))
-	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.handleFiles)))))
-	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(r.handleFileDownload)))))
-	mux.HandleFunc("/api/portfwd", cors(auth(audit(rate(r.handlePortFwd)))))
+	mux.HandleFunc("/api/socks", cors(auth(audit(rate(perm("socks:start")(r.handleSOCKS))))))
+	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.permByMethod("vault:read", "vault:create")(r.handleVault))))))
+	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.permByMethod("files:download", "files:upload")(r.handleFiles))))))
+	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(perm("files:download")(r.handleFileDownload))))))
+	mux.HandleFunc("/api/portfwd", cors(auth(audit(rate(perm("portfwd:start")(r.handlePortFwd))))))
 
 	// Operators (admin only)
 	mux.HandleFunc("/api/operators", cors(auth(admin(audit(rate(r.handleOperators))))))
 	mux.HandleFunc("/api/operators/", cors(auth(admin(audit(rate(r.handleOperatorDelete))))))
 
 	// Team collaboration
-	mux.HandleFunc("/api/notes", cors(auth(audit(rate(r.handleNotes)))))
-	mux.HandleFunc("/api/lock", cors(auth(audit(rate(r.handleLock)))))
-	mux.HandleFunc("/api/profiles", cors(auth(audit(rate(r.handleProfiles)))))
+	mux.HandleFunc("/api/notes", cors(auth(audit(rate(perm("collab:write")(r.handleNotes))))))
+	mux.HandleFunc("/api/lock", cors(auth(audit(rate(perm("collab:write")(r.handleLock))))))
+	mux.HandleFunc("/api/profiles", cors(auth(audit(rate(perm("collab:write")(r.handleProfiles))))))
 
 	// Reporting
-	mux.HandleFunc("/api/report", cors(auth(audit(rate(r.handleReport)))))
+	mux.HandleFunc("/api/report", cors(auth(audit(rate(perm("report:generate")(r.handleReport))))))
 
 	// SIEM webhooks (admin only)
 	mux.HandleFunc("/api/webhooks", cors(auth(admin(audit(rate(r.handleWebhooks))))))
@@ -110,9 +111,9 @@ func (r *Router) corsMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 			origin := req.Header.Get("Origin")
 			if origin != "" {
 				allowed := map[string]bool{
-					"http://localhost:9090":  true,
-					"http://127.0.0.1:9090":  true,
-					"http://localhost:5173":  true,
+					"http://localhost:9090": true,
+					"http://127.0.0.1:9090": true,
+					"http://localhost:5173": true,
 				}
 				if allowed[origin] {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -141,10 +142,14 @@ func (r *Router) authMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			token := authHeader
-			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-				token = authHeader[7:]
+			// Require the exact "Bearer " scheme: raw tokens and
+			// Basic auth credentials are rejected.
+			if !strings.HasPrefix(authHeader, "Bearer ") {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="WORLDC2 C2"`)
+				http.Error(w, `{"error":"authorization scheme must be Bearer"}`, 401)
+				return
 			}
+			token := authHeader[len("Bearer "):]
 
 			username, role, err := r.server.TokenManager().ValidateToken(token)
 			if err != nil {
@@ -173,10 +178,21 @@ func (r *Router) adminMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// auditMiddleware logs API calls.
+// auditMiddleware logs API calls and enforces request body limits.
 func (r *Router) auditMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, req *http.Request) {
+			// Body size limit: small for JSON control endpoints,
+			// larger for file/module uploads.
+			if req.Body != nil {
+				limit := int64(1 << 20) // 1 MiB
+				if strings.HasPrefix(req.URL.Path, "/api/files") ||
+					req.URL.Path == "/api/modules/push" {
+					limit = 64 << 20 // 64 MiB
+				}
+				req.Body = http.MaxBytesReader(w, req.Body, limit)
+			}
+
 			ip, _, _ := net.SplitHostPort(req.RemoteAddr)
 			if ip == "" {
 				ip = req.RemoteAddr
@@ -187,6 +203,20 @@ func (r *Router) auditMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 			}
 			r.server.DB().LogAction(0, "api_call", req.Method+" "+req.URL.Path+" from "+ip+" by "+user)
 			next(w, req)
+		}
+	}
+}
+
+// requirePermissionByMethod enforces readPerm for safe methods (GET/HEAD)
+// and mutatingPerm for the rest — so a read-only role can view but not act.
+func (r *Router) permByMethod(readPerm, mutatingPerm string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, req *http.Request) {
+			p := mutatingPerm
+			if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
+				p = readPerm
+			}
+			r.requirePermission(p)(next)(w, req)
 		}
 	}
 }

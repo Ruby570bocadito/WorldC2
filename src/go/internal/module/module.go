@@ -96,28 +96,44 @@ func (s *Store) Get(name string) *Manifest {
 	return s.modules[name]
 }
 
+// sanitizeModuleName rejects empty names and path separators so a malicious
+// manifest cannot escape the module directory (path traversal).
+func sanitizeModuleName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("module name is required")
+	}
+	if name != filepath.Base(name) || strings.ContainsAny(name, `\..:/`) {
+		return "", fmt.Errorf("invalid module name %q", name)
+	}
+	return name, nil
+}
+
 // Register adds a module to the store.
 func (s *Store) Register(m *Manifest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	clean, err := sanitizeModuleName(m.Name)
+	if err != nil {
+		return err
+	}
+	m.Name = clean
+
 	// Create module directory
 	modDir := filepath.Join(s.baseDir, m.Name)
 	os.MkdirAll(modDir, 0755)
 
-	// Save manifest
-	m.Created = time.Now()
-	data, _ := json.MarshalIndent(m, "", "  ")
-	manifestPath := filepath.Join(modDir, "manifest.json")
-	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
-		return fmt.Errorf("save manifest: %w", err)
-	}
-
-	// Save payload files
+	// Save payload files first so a bad payload can't leave a half-registered
+	// manifest behind.
 	for filename, contentB64 := range m.Files {
 		content, err := base64.StdEncoding.DecodeString(contentB64)
 		if err != nil {
 			return fmt.Errorf("decode %s: %w", filename, err)
+		}
+		filename = filepath.Base(filename)
+		if filename == "." || filename == ".." || filename == "/" {
+			return fmt.Errorf("invalid payload filename")
 		}
 		filePath := filepath.Join(modDir, filename)
 		if err := os.WriteFile(filePath, content, 0644); err != nil {
@@ -125,14 +141,28 @@ func (s *Store) Register(m *Manifest) error {
 		}
 	}
 
-	// Compute and set HMAC
-	m.HMAC = s.computeHMAC(data)
+	// Compute and set HMAC over the COMPACT serialization with the HMAC
+	// field empty — the exact same input Verify() will re-serialize later.
+	m.HMAC = ""
+	m.Created = time.Now()
+	sigData, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("serialize manifest: %w", err)
+	}
+	m.HMAC = s.computeHMAC(sigData)
+
+	// Save manifest (indented for readability; signature covers the
+	// canonical compact form, not the on-disk formatting).
+	manifestPath := filepath.Join(modDir, "manifest.json")
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize manifest: %w", err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+
 	s.modules[m.Name] = m
-
-	// Update manifest on disk with HMAC
-	data, _ = json.MarshalIndent(m, "", "  ")
-	os.WriteFile(manifestPath, data, 0644)
-
 	return nil
 }
 
@@ -168,9 +198,15 @@ func (s *Store) Verify(m *Manifest) bool {
 	// Strip HMAC field before verification
 	originalHMAC := m.HMAC
 	m.HMAC = ""
-	data, _ := json.Marshal(m)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return false
+	}
 	expected := s.computeHMAC(data)
 	m.HMAC = originalHMAC
+	if originalHMAC == "" || expected == "" {
+		return false
+	}
 	return hmac.Equal([]byte(originalHMAC), []byte(expected))
 }
 
@@ -187,8 +223,12 @@ func (s *Store) computeHMAC(data []byte) string {
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.modules, name)
-	return os.RemoveAll(filepath.Join(s.baseDir, name))
+	clean, err := sanitizeModuleName(name)
+	if err != nil {
+		return err
+	}
+	delete(s.modules, clean)
+	return os.RemoveAll(filepath.Join(s.baseDir, clean))
 }
 
 // GetPayloadPath returns the path to a module's payload file.

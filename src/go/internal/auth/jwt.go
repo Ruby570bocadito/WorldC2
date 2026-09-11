@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -26,9 +27,16 @@ type jwtHeader struct {
 type jwtPayload struct {
 	Sub       string `json:"sub"`
 	Role      string `json:"role"`
+	TokenUse  string `json:"token_use"` // "access" or "refresh"
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 }
+
+// Token type values.
+const (
+	TokenUseAccess  = "access"
+	TokenUseRefresh = "refresh"
+)
 
 // TokenManager handles JWT token generation and validation.
 type TokenManager struct {
@@ -49,69 +57,123 @@ func NewTokenManager(secretKey []byte, tokenDuration time.Duration) *TokenManage
 	}
 }
 
-// GenerateToken creates a new JWT token for the given user.
-func (tm *TokenManager) GenerateToken(username, role string) (string, error) {
+func (tm *TokenManager) sign(headerB64, payloadB64 string) string {
+	mac := hmac.New(sha256.New, tm.secretKey)
+	mac.Write([]byte(headerB64 + "." + payloadB64))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (tm *TokenManager) buildToken(sub, role, tokenUse string, ttl time.Duration) (string, error) {
 	now := time.Now().Unix()
 
 	header := jwtHeader{Alg: "HS256", Typ: "JWT"}
 	payload := jwtPayload{
-		Sub:       username,
+		Sub:       sub,
 		Role:      role,
+		TokenUse:  tokenUse,
 		IssuedAt:  now,
-		ExpiresAt: now + int64(tm.tokenDuration.Seconds()),
+		ExpiresAt: now + int64(ttl.Seconds()),
 	}
 
-	headerJSON, _ := json.Marshal(header)
-	payloadJSON, _ := json.Marshal(payload)
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", fmt.Errorf("marshal header: %w", err)
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal payload: %w", err)
+	}
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	signingInput := headerB64 + "." + payloadB64
-
-	mac := hmac.New(sha256.New, tm.secretKey)
-	mac.Write([]byte(signingInput))
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
-	return signingInput + "." + signature, nil
+	return headerB64 + "." + payloadB64 + "." + tm.sign(headerB64, payloadB64), nil
 }
 
-// ValidateToken validates a JWT token and returns the username and role.
+// GenerateToken creates a new access JWT for the given user.
+func (tm *TokenManager) GenerateToken(username, role string) (string, error) {
+	return tm.buildToken(username, role, TokenUseAccess, tm.tokenDuration)
+}
+
+// GenerateRefreshToken creates a long-lived refresh token.
+// Refresh tokens carry token_use=refresh and are rejected by ValidateToken,
+// so a leaked refresh token cannot be replayed against the API.
+func (tm *TokenManager) GenerateRefreshToken(username string) (string, error) {
+	return tm.buildToken(username, TokenUseRefresh, TokenUseRefresh, 24*time.Hour)
+}
+
+// ValidateRefreshToken validates a refresh token and returns the username.
+func (tm *TokenManager) ValidateRefreshToken(tokenString string) (string, error) {
+	sub, _, tokenUse, err := tm.validate(tokenString)
+	if err != nil {
+		return "", err
+	}
+	if tokenUse != TokenUseRefresh {
+		return "", fmt.Errorf("not a refresh token")
+	}
+	return sub, nil
+}
+
+// ValidateToken validates an access JWT token and returns the username and role.
 func (tm *TokenManager) ValidateToken(tokenString string) (username, role string, err error) {
+	sub, role, tokenUse, err := tm.validate(tokenString)
+	if err != nil {
+		return "", "", err
+	}
+	if tokenUse == TokenUseRefresh {
+		return "", "", fmt.Errorf("refresh token cannot be used for API access")
+	}
+	return sub, role, nil
+}
+
+// validate performs signature, algorithm and expiration checks.
+func (tm *TokenManager) validate(tokenString string) (sub, role, tokenUse string, err error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
-		return "", "", fmt.Errorf("invalid token format")
+		return "", "", "", fmt.Errorf("invalid token format")
 	}
 
-	signingInput := parts[0] + "." + parts[1]
 	signature := parts[2]
 
-	// Verify signature
-	mac := hmac.New(sha256.New, tm.secretKey)
-	mac.Write([]byte(signingInput))
-	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
-		return "", "", fmt.Errorf("invalid signature")
+	// Decode and verify the header BEFORE trusting any claims: this pins
+	// the algorithm and prevents header-confusion attacks.
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid header encoding")
+	}
+	var header jwtHeader
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		return "", "", "", fmt.Errorf("invalid header")
+	}
+	if header.Alg != "HS256" {
+		return "", "", "", fmt.Errorf("unexpected signing algorithm %q", header.Alg)
 	}
 
-	// Decode payload
+	expectedSig := tm.sign(parts[0], parts[1])
+	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+		return "", "", "", fmt.Errorf("invalid signature")
+	}
+
 	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", "", fmt.Errorf("invalid payload encoding")
+		return "", "", "", fmt.Errorf("invalid payload encoding")
 	}
 
 	var payload jwtPayload
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-		return "", "", fmt.Errorf("invalid payload")
+		return "", "", "", fmt.Errorf("invalid payload")
 	}
 
-	// Check expiration
+	if payload.TokenUse == "" {
+		// Tokens issued before token_use existed are treated as access.
+		payload.TokenUse = TokenUseAccess
+	}
+
 	if time.Now().Unix() > payload.ExpiresAt {
-		return "", "", fmt.Errorf("token expired")
+		return "", "", "", fmt.Errorf("token expired")
 	}
 
-	return payload.Sub, payload.Role, nil
+	return payload.Sub, payload.Role, payload.TokenUse, nil
 }
 
 // GetSecretKey returns the secret key (for sharing with agents if needed).
@@ -119,35 +181,10 @@ func (tm *TokenManager) GetSecretKey() []byte {
 	return tm.secretKey
 }
 
-// GenerateRefreshToken creates a long-lived refresh token.
-func (tm *TokenManager) GenerateRefreshToken(username string) (string, error) {
-	now := time.Now().Unix()
-
-	header := jwtHeader{Alg: "HS256", Typ: "JWT"}
-	payload := jwtPayload{
-		Sub:       username,
-		Role:      "refresh",
-		IssuedAt:  now,
-		ExpiresAt: now + int64(24*time.Hour.Seconds()), // 24h refresh token
-	}
-
-	headerJSON, _ := json.Marshal(header)
-	payloadJSON, _ := json.Marshal(payload)
-
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
-
-	signingInput := headerB64 + "." + payloadB64
-
-	mac := hmac.New(sha256.New, tm.secretKey)
-	mac.Write([]byte(signingInput))
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
-	return signingInput + "." + signature, nil
-}
-
 func generateSecretKey() []byte {
 	key := make([]byte, 32)
-	rand.Read(key)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
+	}
 	return key
 }

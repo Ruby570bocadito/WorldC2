@@ -32,7 +32,7 @@ var (
 			"socks:start", "socks:stop",
 			"portfwd:start", "portfwd:stop",
 			"operators:create", "operators:read", "operators:delete",
-			"audit:read",
+			"audit:read", "collab:write", "report:generate",
 		},
 	}
 
@@ -47,6 +47,7 @@ var (
 			"files:upload", "files:download",
 			"socks:start", "socks:stop",
 			"portfwd:start", "portfwd:stop",
+			"collab:write", "report:generate",
 		},
 	}
 
@@ -141,26 +142,28 @@ func (r *RBAC) ListRoles() []Role {
 
 // Permission constants for API endpoints.
 const (
-	PermSessionsList    = "sessions:list"
-	PermSessionsView    = "sessions:view"
-	PermSessionsKill    = "sessions:kill"
-	PermCommandsExecute = "commands:execute"
+	PermSessionsList      = "sessions:list"
+	PermSessionsView      = "sessions:view"
+	PermSessionsKill      = "sessions:kill"
+	PermCommandsExecute   = "commands:execute"
 	PermCommandsBroadcast = "commands:broadcast"
-	PermModulesList     = "modules:list"
-	PermModulesPush     = "modules:push"
-	PermModulesDelete   = "modules:delete"
-	PermVaultCreate     = "vault:create"
-	PermVaultRead       = "vault:read"
-	PermVaultDelete     = "vault:delete"
-	PermFilesUpload     = "files:upload"
-	PermFilesDownload   = "files:download"
-	PermFilesDelete     = "files:delete"
-	PermSocksStart      = "socks:start"
-	PermSocksStop       = "socks:stop"
-	PermPortFwdStart    = "portfwd:start"
-	PermPortFwdStop     = "portfwd:stop"
-	PermOperatorsCreate = "operators:create"
-	PermOperatorsRead   = "operators:read"
-	PermOperatorsDelete = "operators:delete"
-	PermAuditRead       = "audit:read"
+	PermModulesList       = "modules:list"
+	PermModulesPush       = "modules:push"
+	PermModulesDelete     = "modules:delete"
+	PermVaultCreate       = "vault:create"
+	PermVaultRead         = "vault:read"
+	PermVaultDelete       = "vault:delete"
+	PermFilesUpload       = "files:upload"
+	PermFilesDownload     = "files:download"
+	PermFilesDelete       = "files:delete"
+	PermSocksStart        = "socks:start"
+	PermSocksStop         = "socks:stop"
+	PermPortFwdStart      = "portfwd:start"
+	PermPortFwdStop       = "portfwd:stop"
+	PermOperatorsCreate   = "operators:create"
+	PermOperatorsRead     = "operators:read"
+	PermOperatorsDelete   = "operators:delete"
+	PermAuditRead         = "audit:read"
+	PermCollabWrite       = "collab:write"
+	PermReportGenerate    = "report:generate"
 )

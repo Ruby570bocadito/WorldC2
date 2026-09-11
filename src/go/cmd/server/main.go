@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -31,9 +33,15 @@ func main() {
 		cfg.Server.Host = *host
 	}
 	if *port != 0 {
+		if *port < 1 || *port > 65535 {
+			log.Fatalf("Invalid port %d: must be 1-65535", *port)
+		}
 		cfg.Server.Port = uint16(*port)
 	}
 	if *apiPort != 0 {
+		if *apiPort < 1 || *apiPort > 65535 {
+			log.Fatalf("Invalid api-port %d: must be 1-65535", *apiPort)
+		}
 		cfg.API.Port = uint16(*apiPort)
 	}
 	if *noTLS {
@@ -52,15 +60,24 @@ func main() {
 		if op.Password != "" {
 			// Password is already bcrypt hashed in config
 			if err := database.CreateOperatorWithHash(op.Username, op.Password, op.Role); err != nil {
-				// Likely already exists, ignore
+				log.Printf("[AUTH] Operator %q: %v", op.Username, err)
 			}
 		}
 	}
 
-	// Fallback: create default admin if no operators in config
+	// Fallback: create a bootstrap admin if the config defines none. A
+	// predictable admin/admin default would be a critical exposure, so a
+	// random password is generated and printed exactly once.
 	if len(cfg.Operators) == 0 {
-		if err := database.CreateOperator("admin", "admin", "admin"); err != nil {
-			// Likely already exists, ignore
+		bootPass, err := generateBootstrapPassword()
+		if err != nil {
+			log.Fatalf("Failed to generate bootstrap password: %v", err)
+		}
+		if err := database.CreateOperator("admin", bootPass, "admin"); err != nil {
+			log.Printf("[AUTH] Bootstrap admin: %v", err)
+		} else {
+			log.Printf("[AUTH] No operators configured — created bootstrap user 'admin' with password: %s", bootPass)
+			log.Printf("[AUTH] Store this password now; it will not be shown again.")
 		}
 	}
 
@@ -83,13 +100,12 @@ func main() {
 ║  C2 Port:  %-33d ║
 ║  API Port: %-33d ║
 ║  TLS:      %-33v ║
-║  DB:       %-33s ║
 ║  Sessions: %-33d ║
 ╚══════════════════════════════════════════════╝
 
 C2 API:   http://localhost:%d/api/health
 REST API: http://localhost:%d/api/sessions
-`, cfg.Server.Port, cfg.API.Port, cfg.TLS.Enabled, cfg.Database.DSN, 0,
+`, cfg.Server.Port, cfg.API.Port, cfg.TLS.Enabled, 0,
 		cfg.API.Port, cfg.API.Port)
 
 	log.Printf("[C2] Server ready")
@@ -100,4 +116,13 @@ REST API: http://localhost:%d/api/sessions
 
 	log.Println("[C2] Shutdown signal received")
 	server.Stop()
+}
+
+// generateBootstrapPassword creates a random 20-char URL-safe password.
+func generateBootstrapPassword() (string, error) {
+	b := make([]byte, 15)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

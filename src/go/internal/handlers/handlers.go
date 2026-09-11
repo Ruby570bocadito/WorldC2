@@ -91,8 +91,8 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	username, role, err := r.server.TokenManager().ValidateToken(refreshReq.RefreshToken)
-	if err != nil || role != "refresh" {
+	username, err := r.server.TokenManager().ValidateRefreshToken(refreshReq.RefreshToken)
+	if err != nil {
 		http.Error(w, `{"error":"invalid refresh token"}`, 401)
 		return
 	}
@@ -103,7 +103,9 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	operatorRole := "operator"
+	// Reject refresh tokens for operators that no longer exist instead
+	// of silently minting a token with an invented role.
+	operatorRole := ""
 	for _, op := range operators {
 		if op["username"] == username {
 			if r, ok := op["role"].(string); ok {
@@ -111,6 +113,10 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 			}
 			break
 		}
+	}
+	if operatorRole == "" {
+		http.Error(w, `{"error":"operator not found"}`, 401)
+		return
 	}
 
 	newToken, err := r.server.TokenManager().GenerateToken(username, operatorRole)
@@ -131,7 +137,7 @@ func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
 		"status":          "ok",
 		"active_sessions": r.server.ActiveSessions(),
 		"listeners":       r.server.ListenerCount(),
-		"uptime":          time.Now().Unix(),
+		"uptime_seconds":  r.server.UptimeSeconds(),
 	})
 }
 
@@ -525,10 +531,10 @@ func (r *Router) handleLock(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleProfiles(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "POST" {
 		var profReq struct {
-			Name          string  `json:"name"`
+			Name           string  `json:"name"`
 			BeaconInterval int     `json:"beacon_interval"`
-			Jitter        float64 `json:"jitter"`
-			Transport     string  `json:"transport"`
+			Jitter         float64 `json:"jitter"`
+			Transport      string  `json:"transport"`
 		}
 		json.NewDecoder(req.Body).Decode(&profReq)
 		id := fmt.Sprintf("profile-%x", time.Now().UnixNano())

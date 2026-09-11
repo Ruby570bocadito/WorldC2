@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
 )
 
 // DB wraps the SQLite database connection with thread-safe access.
@@ -21,31 +21,31 @@ type DB struct {
 
 // SessionRecord represents a stored session.
 type SessionRecord struct {
-	ID         string
-	AgentID    string
-	Hostname   string
-	OS         string
-	Arch       string
-	Username   string
-	IsAdmin    bool
-	PublicIP   string
-	LocalIP    string
-	MACAddr    string
-	FirstSeen  time.Time
-	LastSeen   time.Time
-	State      string
-	TaskCount  int
+	ID        string
+	AgentID   string
+	Hostname  string
+	OS        string
+	Arch      string
+	Username  string
+	IsAdmin   bool
+	PublicIP  string
+	LocalIP   string
+	MACAddr   string
+	FirstSeen time.Time
+	LastSeen  time.Time
+	State     string
+	TaskCount int
 }
 
 // TaskRecord represents a stored task.
 type TaskRecord struct {
-	ID         string
-	SessionID  string
-	Command    string
-	Output     string
-	ExitCode   int
-	Success    bool
-	IssuedAt   time.Time
+	ID          string
+	SessionID   string
+	Command     string
+	Output      string
+	ExitCode    int
+	Success     bool
+	IssuedAt    time.Time
 	CompletedAt *time.Time
 }
 
@@ -101,8 +101,8 @@ func OpenWithEncryption(dsn string, masterKey []byte) (*DB, error) {
 
 	// WAL mode for better concurrent read performance
 	// SQLite supports multiple readers with WAL, single writer
-	conn.SetMaxOpenConns(4)  // Allow limited concurrency for reads
-	conn.SetMaxIdleConns(2)  // Keep some connections warm
+	conn.SetMaxOpenConns(4) // Allow limited concurrency for reads
+	conn.SetMaxIdleConns(2) // Keep some connections warm
 	conn.SetConnMaxLifetime(30 * time.Minute)
 
 	db := &DB{conn: conn}
@@ -136,14 +136,14 @@ func OpenWithEncryption(dsn string, masterKey []byte) (*DB, error) {
 // configureSQLite enables WAL mode and other optimizations.
 func (d *DB) configureSQLite() error {
 	pragmas := []string{
-		`PRAGMA journal_mode=WAL`,              // Write-Ahead Logging for concurrent reads
-		`PRAGMA synchronous=NORMAL`,            // Faster writes, still safe with WAL
-		`PRAGMA cache_size=-64000`,             // 64MB cache (negative = KB)
-		`PRAGMA temp_store=MEMORY`,             // Temp tables in memory
-		`PRAGMA mmap_size=268435456`,           // 256MB memory-mapped I/O
-		`PRAGMA foreign_keys=ON`,               // Enforce foreign key constraints
-		`PRAGMA busy_timeout=5000`,             // Wait 5s for locks instead of failing
-		`PRAGMA wal_autocheckpoint=1000`,       // Auto-checkpoint every 1000 pages
+		`PRAGMA journal_mode=WAL`,        // Write-Ahead Logging for concurrent reads
+		`PRAGMA synchronous=NORMAL`,      // Faster writes, still safe with WAL
+		`PRAGMA cache_size=-64000`,       // 64MB cache (negative = KB)
+		`PRAGMA temp_store=MEMORY`,       // Temp tables in memory
+		`PRAGMA mmap_size=268435456`,     // 256MB memory-mapped I/O
+		`PRAGMA foreign_keys=ON`,         // Enforce foreign key constraints
+		`PRAGMA busy_timeout=5000`,       // Wait 5s for locks instead of failing
+		`PRAGMA wal_autocheckpoint=1000`, // Auto-checkpoint every 1000 pages
 	}
 
 	for _, pragma := range pragmas {
@@ -416,9 +416,9 @@ func (d *DB) ListOperators() ([]map[string]interface{}, error) {
 			return nil, err
 		}
 		operators = append(operators, map[string]interface{}{
-			"id":       op.ID,
-			"username": op.Username,
-			"role":     op.Role,
+			"id":         op.ID,
+			"username":   op.Username,
+			"role":       op.Role,
 			"created_at": op.CreatedAt,
 		})
 	}
