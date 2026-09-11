@@ -2,28 +2,68 @@
 
 # ⚡ WorldC2
 
-### *Enterprise Command & Control Platform*
+### Command & Control platform for authorized security labs
 
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://golang.org/)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://golang.org/)
 [![Vue 3](https://img.shields.io/badge/Vue_3-4FC08D?style=for-the-badge&logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-FF6B35?style=for-the-badge)](LICENSE)
-[![Build](https://img.shields.io/badge/Build-Passing-28A745?style=for-the-badge&logo=github-actions&logoColor=white)]()
+[![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white)](.github/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20|%20Windows%20|%20macOS-6C63FF?style=for-the-badge)]()
-[![PRs](https://img.shields.io/badge/PRs-Welcome-2EA043?style=for-the-badge&logo=git&logoColor=white)]()
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:6C63FF,100:00D4AA&height=200&section=header&text=WorldC2&fontSize=80&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&desc=Enterprise%20C2%20Platform%20|%20Encrypted%20|%20Modular%20|%20Real-time&descAlignY=55&descSize=18" width="100%"/>
-
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=22&duration=3000&pause=800&color=6C63FF&center=true&vCenter=true&width=800&lines=Encrypted+Multi-Agent+Communication;AV+Evasion+%26+Stealth+Operations;SOCKS5+Proxy+Tunneling+System;Real-Time+Telemetry+%26+Analytics;Enterprise-Grade+Red+Team+Platform)](https://git.io/typing-svg)
-
----
+<img src="docs/assets/demo.gif" alt="WorldC2 dashboard demo" width="100%"/>
 
 </div>
 
-## 📋 Overview
+---
 
-**WorldC2** is an **enterprise-grade Command & Control platform** purpose-built for red team operations, security assessments, and adversary simulation. Engineered with a **Go-based C2 server**, **lightweight implants**, and a **Vue 3 web dashboard**, WorldC2 delivers encrypted multi-agent communication, AV/EDR evasion capabilities, SOCKS5 proxy tunneling, and real-time telemetry – all wrapped in a modern, modular architecture.
+## ⚠️ Authorized use only
 
-> ⚠️ **AUTHORIZED USE ONLY** — This tool is designed exclusively for authorized security assessments, penetration testing, and research. Unauthorized use is prohibited.
+WorldC2 is a **red-team tooling project built for learning and demonstration**. It is intended for
+use in environments you own or are explicitly authorized to test (CTF labs, home labs, engagements
+with a signed scope). Unauthorized use against systems you do not own is illegal.
+
+This project is published as a **portfolio piece**: it shows how a modern C2 is architected in Go —
+encrypted transports, session management, RBAC, audit logging and a real-time operator console.
+
+---
+
+## ✨ What it actually does
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| 🔐 Encrypted C2 channel | ✅ Working | X25519 key exchange + XChaCha20-Poly1305 (AEAD) per session |
+| 📡 Multi-transport listeners | ✅ Working | TCP+TLS, HTTP long-poll, WebSocket |
+| 🖥️ Operator web console | ✅ Working | Vue 3 + Vite, dark minimalist UI, live polling |
+| 🧩 REST API + JWT auth | ✅ Working | Access + refresh tokens (`token_use` claims), bcrypt operators |
+| 👥 RBAC | ✅ Working | `admin` / `operator` / `viewer` / `auditor` roles, per-endpoint permissions |
+| 📜 Audit log | ✅ Working | Actions stored in SQLite, SIEM forwarding hook |
+| 🔌 Modular task system | ✅ Working | Protobuf envelopes, dynamic module push (HMAC-verified manifests) |
+| 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection |
+| 🌐 SOCKS5 / port-forward tunnels | ✅ Working | TCP relaying through agents |
+| 🗄️ SQLite storage | ✅ Working | Transactional migrations, encrypted-at-rest secrets support |
+| 🐳 Docker packaging | ✅ Working | Multi-stage build, non-root runtime user, healthcheck |
+| 🔄 DNS transport | 🧪 Experimental | Listener exists, not integrated with agent fallback chain |
+| 🕸️ WebRTC (Pion) | 📋 Planned | Not implemented — removed from docs until it is real |
+| 📈 File exfil resume | 📋 Planned | Not implemented |
+
+> **Honesty policy:** this README only claims what the code does. Features that are planned or
+> experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
+
+---
+
+## 📸 Console
+
+| Login | Dashboard |
+|-------|-----------|
+| ![Login](docs/assets/login.png) | ![Dashboard](docs/assets/dashboard.png) |
+
+| Sessions | Command Runner |
+|----------|----------------|
+| ![Sessions](docs/assets/sessions.png) | ![Terminal](docs/assets/terminal.png) |
+
+| Modules | Files |
+|---------|-------|
+| ![Modules](docs/assets/modules.png) | ![Files](docs/assets/files.png) |
 
 ---
 
@@ -31,255 +71,139 @@
 
 ```mermaid
 graph TB
-    Client[Implant/Agent - Windows/Linux/macOS]
-    Proxy[SOCKS5 Proxy]
-    Server[C2 Server - Go/TLS + REST + WebSocket]
-    DB[(SQLite / PostgreSQL)]
-    FS[File Storage - Exfil + Payloads]
-    UI[Web UI - Vue 3 / Vite]
-    CLI[CLI Client + Builder]
+    Agent[Implant - Go, multi-transport]
+    Server[C2 Server - Go]
+    Proxy[SOCKS5 / PortFwd]
+    UI[Web Console - Vue 3]
+    DB[(SQLite)]
+    Loot[Loot + Modules]
 
-    Client <-->|Encrypted Tunnel - X25519+XChaCha20| Server
-    Client -.->|WebRTC via Pion| Server
-    Server <-->|REST API + WebSocket| UI
-    Proxy <-->|SOCKS5 via C2 Relay| Server
+    Agent <-->|"X25519 + XChaCha20-Poly1305 framing"| Server
+    Agent -.->|"fallback: TCP / HTTP / WS"| Server
+    Proxy --> Server
+    UI <-->|"REST + JWT (Bearer)"| Server
     Server --> DB
-    Server --> FS
+    Server --> Loot
 ```
 
----
-
-## ✨ Key Features
-
-| Feature | Description |
-|---------|-------------|
-| 🔐 **End-to-End Encryption** | X25519 key exchange + XChaCha20-Poly1305 AEAD per-session encryption |
-| 🧩 **Multi-Agent Architecture** | Simultaneous implant management with independent encrypted channels |
-| 🛡️ **AV/EDR Evasion** | Runtime encryption, polymorphism, sleep obfuscation, indirect syscalls |
-| 🌍 **SOCKS5 Tunneling** | Full proxy chain through C2 for lateral movement & tool proxying |
-| 📡 **Real-Time Telemetry** | Live agent status, geo-location, process tree, network connections |
-| 📊 **Vue 3 Dashboard** | Dark-themed reactive UI with real-time WebSocket updates |
-| 🔌 **Modular Payload System** | Plugin-based modules for credential theft, persistence, discovery |
-| 📁 **File Exfiltration** | Chunked encrypted file transfers with resume support |
-| 🌐 **WebRTC Channels** | P2P communication via Pion WebRTC for NAT traversal |
-| 🧪 **Extensible API** | REST APIs + Protobuf serialization for custom integrations |
-| 📝 **Full Audit Logging** | Every command and response logged with timestamps and agent ID |
+**Crypto:** every session runs an ephemeral X25519 agreement; HKDF-SHA256 derives the encryption
+key, an HMAC key and a session token; traffic is framed as protobuf envelopes encrypted with
+XChaCha20-Poly1305 (192-bit nonces). The API layer is separate: bcrypt-hashed operators, JWT access
+tokens (12h) + refresh tokens (24h, `token_use=refresh`, rejected by API routes), and RBAC checks
+per endpoint.
 
 ---
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Go** 1.25+ ([install](https://go.dev/dl/))
-- **Node.js** 18+ & npm
-- **SQLite** (built-in, zero config) or **PostgreSQL** 14+ (optional)
-
-### Clone & Build
+## 🚀 Quick start
 
 ```bash
 git clone https://github.com/Ruby570bocadito/WorldC2.git
 cd WorldC2
 
-# Build C2 server
-cd src/go && go build -o ../../dist/worldc2-server ./cmd/server
+# Build the server (Go 1.25+)
+cd src/go && go build -o ../../dist/worldc2-server ./cmd/server && cd ../..
 
-# Build agent/implant
-go build -o ../../dist/worldc2-agent ./cmd/agent
+# Build the web console (Node 18+)
+cd web && npm ci && npm run build && cd ../..
 
-# Build payload builder
-go build -o ../../dist/worldc2-builder ./cmd/builder
+# Configure
+cp config.example.yaml config.yaml
+#   → default example hash is 'admin': CHANGE IT before any real use
+#   → or remove the operators block and a random bootstrap password is printed once
 
-# Setup Web UI (Vue 3 + Vite)
-cd ../../web && npm install && npm run build
-```
-
-### Configure
-
-```bash
-# Edit config.yaml (SQLite by default, zero config)
-# Or use a custom config:
-cp config.example.yaml my-config.yaml
-# Edit my-config.yaml to your needs
-```
-
-### Run
-
-```bash
-# 1. Launch C2 server (SQLite by default — no DB setup needed)
-./dist/worldc2-server --config config.yaml
-
-# 2. Start Web UI (dev mode)
-cd web && npm run dev
-
-# 3. Deploy agent on target
-./dist/worldc2-agent --server c2.example.com:8443
+# Run — the console is served on the API port automatically
+./dist/worldc2-server -config config.yaml
+# Dashboard:  http://localhost:9090
+# Health:     http://localhost:9090/api/health
 ```
 
 ### Docker
 
 ```bash
-# Build and run everything with Docker Compose
-docker compose up --build
+docker compose up --build      # or: docker build -t worldc2-server .
+```
 
-# Or build individual images:
-docker build -t worldc2-server -f Dockerfile .
-docker build -t worldc2-agent -f Dockerfile.agent .
+### Agents
+
+```bash
+cd src/go
+go build -o ../../dist/worldc2-agent ./cmd/agent
+./dist/worldc2-agent --server 127.0.0.1:8443
 ```
 
 ---
 
-## 📦 Project Structure
+## 🔧 Development
+
+```bash
+make test          # Go tests with race detector
+make lint          # go vet
+make web           # build frontend
+make build-agent-all  # cross-compile agents
+make test-all      # Go + Python + frontend pipeline
+```
+
+CI runs on every push: Go tests (`-race`), vet, gofmt, Python syntax checks, a live API smoke test
+against a real server instance, frontend build with XSS-sink checks, multi-platform builds and a
+Docker smoke test.
+
+---
+
+## 📦 Project layout
 
 ```
 WorldC2/
-├── src/
-│   ├── go/
-│   │   ├── cmd/
-│   │   │   ├── server/         # C2 server entrypoint
-│   │   │   ├── agent/          # Implant/agent entrypoint
-│   │   │   └── builder/        # Payload builder
-│   │   ├── internal/           # Shared packages (crypto, protocol, etc.)
-│   │   └── go.mod
-│   └── agents/                 # Agent-specific code (per-platform)
-├── web/                        # Vue 3 + Vite frontend
-│   ├── src/                    # Vue components
-│   └── package.json
-├── api/                        # API definitions / Protobuf specs
-├── modules/                    # Plugins & payload modules
-├── payloads/                   # Pre-built payloads
-├── docs/                       # Documentation
-├── tests/                      # Integration tests
-├── scripts/                    # Automation scripts
-├── dist/                       # Build output
-├── config.yaml                 # Default configuration
-├── config.example.yaml         # Example configuration
-├── Dockerfile                  # Server docker image
-├── Dockerfile.agent            # Agent docker image
-├── docker-compose.yml          # Multi-service deployment
-├── Makefile
-└── CHANGELOG.md
+├── src/go/               # Go workspace
+│   ├── cmd/server        #   C2 server entrypoint
+│   ├── cmd/agent         #   implant entrypoint
+│   ├── cmd/builder       #   payload builder helper
+│   └── internal/         #   c2, session, crypto, auth, db, handlers, module, transport...
+├── web/                  # Vue 3 + Vite operator console
+├── api/openapi.yaml      # REST API spec
+├── modules/              # dynamic module manifests
+├── scripts/              # operator tooling (deploy, certs, hardening audit, console client)
+├── tests/                # API functional / e2e / pentest self-tests
+├── docs/assets/          # screenshots & demo GIF
+└── Makefile
 ```
 
 ---
 
-## 🧩 Module & Agent Matrix
+## 🔒 Security notes
 
-| Agent / Module | Architecture | Protocol | Evasion | Purpose |
-|----------------|-------------|----------|---------|---------|
-| 🟢 **Pulse-Beacon** | Windows x64 | HTTPS + Protobuf | Sleep masking, API unhooking | Long-term persistence & beaconing |
-| 🔵 **Pulse-Shell** | Linux x64 | WebSocket | Process hollowing | Interactive shell access |
-| 🟣 **Pulse-Tunnel** | Cross-platform | SOCKS5 via C2 | Traffic obfuscation | Proxy/lateral movement |
-| 🟠 **Pulse-Gather** | Cross-platform | Protobuf stream | — | Host recon & data collection |
-| 🔴 **Pulse-Priv** | Windows x64 | Named pipe | Token manipulation | Privilege escalation |
-| ⚪ **Pulse-Kill** | Windows/Linux | One-shot | Timestamp stomping | Process termination & cleanup |
-
-> **Note:** Agent binaries are compiled via `cmd/builder` which embeds the appropriate agent type and configuration.
-
----
-
-## 🔒 Cryptography
-
-WorldC2 uses **modern AEAD encryption** for all agent-to-server communications:
-
-| Component | Algorithm | Purpose |
-|-----------|-----------|---------|
-| 🔑 **Key Exchange** | X25519 ECDH | Ephemeral session key agreement |
-| 🔐 **Encryption** | XChaCha20-Poly1305 | Authenticated symmetric encryption |
-| 📜 **Certificate** | TLS 1.3 (mTLS optional) | Transport layer security |
-| 🧂 **Nonce** | 192-bit random (XChaCha20) | Per-message uniqueness |
-
----
-
-## ⚙️ Configuration
-
-```yaml
-# config.yaml
-server:
-  host: "0.0.0.0"
-  port: 8443
-  max_sessions: 5000
-  heartbeat_interval: 30s
-  session_timeout: 300s
-
-database:
-  driver: "sqlite"          # or "postgres"
-  dsn: "worldc2.db"             # or "postgres://user:pass@localhost:5432/worldc2"
-
-tls:
-  enabled: true
-  auto_cert: true           # Let's Encrypt auto certs
-  cert_file: ""
-  key_file: ""
-
-transport:
-  http_port: 8445
-  ws_port: 8446
-  dns_port: 0
-```
-
----
-
-## 🧪 Development
-
-```bash
-# Run tests
-cd src/go && go test ./...
-
-# Lint
-golangci-lint run ./src/go/...
-
-# Build all (using Makefile)
-make build-all
-```
-
----
-
-## 📸 Dashboard Preview
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  WorldC2 Dashboard                  ● 12 agents online     │
-├──────────┬──────────┬──────────┬──────────┬─────────────────┤
-│ Agent ID │ Platform │  Status  │  Uptime  │  Last Check-in  │
-├──────────┼──────────┼──────────┼──────────┼─────────────────┤
-│ abc123   │ Windows  │ 🟢 Online │ 14h 32m  │  just now       │
-│ def456   │ Linux    │ 🟢 Online │ 6h 18m   │  12s ago        │
-│ ghi789   │ macOS    │ 🟡 Idle   │ 2h 05m   │  45s ago        │
-│ jkl012   │ Windows  │ 🔴 Dead   │ —        │  3h ago         │
-└──────────┴──────────┴──────────┴──────────┴─────────────────┘
-```
+- Operators are stored as bcrypt hashes; the example config ships the hash of `admin` — change it.
+- TLS: `auto_cert: true` generates a self-signed cert; point `cert_file`/`key_file` at your own
+  cert for real deployments. If TLS is enabled but misconfigured, **the server refuses to start**
+  instead of falling back to plaintext.
+- Agents pin the server certificate on first connect (TOFU) and reject changes afterwards.
+- Every API request is rate-limited, size-limited and audited; refresh tokens cannot be used as
+  access tokens.
+- The command validator and module manifests are HMAC-signed; module paths are sanitized against
+  traversal.
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome — but **WorldC2 is intended for authorized security research only**. Please ensure you have proper authorization before testing or deploying.
+PRs are welcome — bug fixes, tests and docs first. Please keep the honesty policy: do not document
+features that don't exist.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/amazing`)
-3. Commit your changes (`git commit -m 'feat: add amazing feature'`)
-4. Push to the branch (`git push origin feat/amazing`)
-5. Open a Pull Request
+1. Fork the repo
+2. `git checkout -b feat/amazing`
+3. `make test-all` must pass
+4. Open a PR
 
 ---
 
 ## 📄 License
 
-Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
-
----
+MIT — see [LICENSE](LICENSE).
 
 <div align="center">
 
-**WorldC2** — *Enterprise Command & Control Platform*
+**WorldC2** — built for the lab, documented honestly.
 
-Built with ⚡ for professional red teams
-
-[Report Bug](https://github.com/Ruby570bocadito/WorldC2/issues) · [Request Feature](https://github.com/Ruby570bocadito/WorldC2/issues)
-
----
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:00D4AA,50:6C63FF,100:0d1117&height=150&section=footer&text=—+WorldC2+—&fontSize=40&fontColor=FFFFFF&animation=fadeIn" width="100%"/>
+[Report a bug](https://github.com/Ruby570bocadito/WorldC2/issues) ·
+[Request a feature](https://github.com/Ruby570bocadito/WorldC2/issues)
 
 </div>
