@@ -84,7 +84,7 @@ make build          # Compile
 make test           # Go tests
 make test-all       # All tests
 make docker         # Docker up
-make harden         # Security fix
+make harden         # Security report (report-only; apply fixes manually)
 make certs          # TLS certs
 make clean          # Clean artifacts
 make help           # Show all targets

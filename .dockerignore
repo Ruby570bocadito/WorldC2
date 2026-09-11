@@ -1,0 +1,25 @@
+# VCS y metadatos
+.git
+.gitignore
+.gitattributes
+
+# Artefactos de build locales
+web/node_modules
+web/dist
+dist/
+src/go/coverage.out
+src/go/coverage.html
+*.db
+*.log
+
+# Documentación pesada que no afecta al build de imagen
+docs/assets
+*.png
+*.gif
+
+# Entorno local
+.env
+config.yaml
+loot/
+reports/
+certs/

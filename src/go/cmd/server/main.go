@@ -48,8 +48,17 @@ func main() {
 		cfg.TLS.Enabled = false
 	}
 
-	// Open database
-	database, err := db.Open(cfg.Database.DSN)
+	// Open database. Setting WORLDC2_MASTER_KEY enables at-rest encryption
+	// (AES-256-GCM) for sensitive columns such as vault passwords and
+	// operator notes. Any non-empty passphrase works — the encryptor
+	// derives a 256-bit key from it. Losing the key makes stored secrets
+	// unrecoverable by design.
+	var masterKey []byte
+	if mk := os.Getenv("WORLDC2_MASTER_KEY"); mk != "" {
+		masterKey = []byte(mk)
+		log.Println("[DB] WORLDC2_MASTER_KEY is set — at-rest encryption enabled (AES-256-GCM)")
+	}
+	database, err := db.OpenWithEncryption(cfg.Database.DSN, masterKey)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

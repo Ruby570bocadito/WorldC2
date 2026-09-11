@@ -9,7 +9,7 @@ RUN go mod download
 COPY src/go/ .
 
 ARG SERVER_ADDR=host.docker.internal:8443
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X 'main.DefaultServer=${SERVER_ADDR}'" -o /worldc2-agent ./cmd/agent
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X 'main.DefaultServer=${SERVER_ADDR}'" -o /worldc2-agent ./cmd/agent
 
 FROM alpine:3.20
 

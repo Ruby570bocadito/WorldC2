@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2"
@@ -153,6 +154,12 @@ func (r *Router) handleListSessions(w http.ResponseWriter, req *http.Request) {
 // handleSessionDetail returns session details and tasks.
 func (r *Router) handleSessionDetail(w http.ResponseWriter, req *http.Request) {
 	id := req.URL.Path[len("/api/sessions/"):]
+	// Reject empty IDs and control characters (e.g. %00 path injection)
+	// before they reach any lookup.
+	if id == "" || strings.ContainsFunc(id, func(rr rune) bool { return rr < 0x20 || rr == 0x7f }) {
+		http.Error(w, "invalid session id", 400)
+		return
+	}
 	if req.Method == "DELETE" {
 		if err := r.server.KillAgent(id); err != nil {
 			http.Error(w, err.Error(), 404)
@@ -161,8 +168,12 @@ func (r *Router) handleSessionDetail(w http.ResponseWriter, req *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "killed"})
 		return
 	}
+	sess, err := r.server.DB().GetSession(id)
+	if err != nil || sess == nil {
+		http.Error(w, `{"error":"session not found"}`, 404)
+		return
+	}
 	tasks, _ := r.server.DB().GetSessionTasks(id)
-	sess, _ := r.server.DB().GetSession(id)
 	json.NewEncoder(w).Encode(map[string]interface{}{"session": sess, "tasks": tasks})
 }
 

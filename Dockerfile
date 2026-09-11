@@ -19,9 +19,9 @@ RUN go mod download
 
 COPY src/go/ .
 
-# CGO is required by the modernc.org/sqlite driver on some platforms;
-# it builds cleanly either way, keep CGO_ENABLED=1 for safety.
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /worldc2-server ./cmd/server
+# modernc.org/sqlite is a pure-Go driver — CGO_ENABLED=0 keeps the build
+# static, cross-compilable and consistent with Makefile/CI.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /worldc2-server ./cmd/server
 
 # ---------- Runtime ----------
 FROM alpine:3.20

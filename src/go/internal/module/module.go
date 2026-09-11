@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,9 +60,22 @@ func (s *Store) loadFromDisk() {
 	for _, e := range entries {
 		if e.IsDir() {
 			manifestPath := filepath.Join(s.baseDir, e.Name(), "manifest.json")
-			if m, err := s.loadManifest(manifestPath); err == nil {
-				s.modules[m.Name] = m
+			m, err := s.loadManifest(manifestPath)
+			if err != nil {
+				continue
 			}
+			// Tamper-evidence: a manifest that carries a signature which no
+			// longer validates (edited on disk, or signed with a different
+			// signing key) is rejected outright. Unsigned manifests are
+			// accepted with a notice so the bundled example modules load.
+			if m.HMAC != "" && !s.Verify(m) {
+				log.Printf("[MODULES] rejecting %q: manifest HMAC verification failed (file modified or signed with another key)", m.Name)
+				continue
+			}
+			if m.HMAC == "" {
+				log.Printf("[MODULES] loaded unsigned module %q (re-push it via the API to have it signed)", m.Name)
+			}
+			s.modules[m.Name] = m
 		}
 	}
 }
@@ -170,6 +184,10 @@ func (s *Store) Register(m *Manifest) error {
 func (s *Store) Pack(name string) (*PackedModule, error) {
 	s.mu.RLock()
 	m, ok := s.modules[name]
+	if ok && m.HMAC != "" && !s.Verify(m) {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("module %q: manifest HMAC verification failed — re-register it before pushing", name)
+	}
 	s.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("module not found: %s", name)
@@ -193,21 +211,25 @@ func (s *Store) Pack(name string) (*PackedModule, error) {
 	return packed, nil
 }
 
-// Verify checks the HMAC signature of a module manifest.
+// Verify checks the HMAC signature of a module manifest. It never mutates
+// the manifest (safe to call concurrently with readers): verification runs
+// over a shallow copy with the HMAC field cleared, matching exactly what
+// Register() signed.
 func (s *Store) Verify(m *Manifest) bool {
-	// Strip HMAC field before verification
-	originalHMAC := m.HMAC
-	m.HMAC = ""
-	data, err := json.Marshal(m)
+	if m == nil || m.HMAC == "" || len(s.hmacKey) == 0 {
+		return false
+	}
+	cp := *m
+	cp.HMAC = ""
+	data, err := json.Marshal(&cp)
 	if err != nil {
 		return false
 	}
 	expected := s.computeHMAC(data)
-	m.HMAC = originalHMAC
-	if originalHMAC == "" || expected == "" {
+	if expected == "" {
 		return false
 	}
-	return hmac.Equal([]byte(originalHMAC), []byte(expected))
+	return hmac.Equal([]byte(m.HMAC), []byte(expected))
 }
 
 func (s *Store) computeHMAC(data []byte) string {

@@ -16,6 +16,7 @@ import (
 type CertPinner struct {
 	pinnedFingerprint string
 	serverName        string
+	clientCert        *tls.Certificate // optional mTLS client certificate
 }
 
 // NewCertPinner creates a certificate pinner with the given fingerprint.
@@ -27,13 +28,20 @@ func NewCertPinner(fingerprint, serverName string) *CertPinner {
 	}
 }
 
+// SetClientCert attaches an mTLS client certificate used on every dial.
+func (cp *CertPinner) SetClientCert(cert tls.Certificate) { cp.clientCert = &cert }
+
 // DialTLS connects to the server via TLS and verifies the certificate fingerprint.
 func (cp *CertPinner) DialTLS(addr string) (net.Conn, error) {
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{
+	cfg := &tls.Config{
 		ServerName:         cp.serverName,
 		InsecureSkipVerify: true, // We verify manually via pinning
 		MinVersion:         tls.VersionTLS12,
-	})
+	}
+	if cp.clientCert != nil {
+		cfg.Certificates = []tls.Certificate{*cp.clientCert}
+	}
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("tls dial: %w", err)
 	}

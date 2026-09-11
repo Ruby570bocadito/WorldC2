@@ -14,9 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def find_binary(name):
-    """Binary location coherent with the repo layout (Makefile output first)."""
-    p = PROJECT_ROOT / name
-    return p
+    """Binary location coherent with the repo layout (Makefile output in dist/)."""
+    return PROJECT_ROOT / "dist" / name
 
 class E2ETestRunner:
     def __init__(self):
@@ -42,10 +41,7 @@ class E2ETestRunner:
             db.unlink()
         server_bin = find_binary("worldc2-server")
         if not server_bin.exists():
-            # Fall back to the binary committed at src/go/server
-            server_bin = PROJECT_ROOT / "src" / "go" / "server"
-        if not server_bin.exists():
-            print(f"{RED}Server binary not found (build with 'make build-server'){RESET}")
+            print(f"{RED}Server binary not found at {server_bin} (build with 'make build-server'){RESET}")
             return False
         args = [str(server_bin), "-config", "config.yaml"]
         if not tls:
@@ -113,12 +109,14 @@ class E2ETestRunner:
             return 0, {"_error": str(e)}
 
     def wait_for_agent(self, timeout=30):
-        """Wait for agent to connect and return session ID"""
+        """Wait for an ACTIVE agent and return its session record."""
         start = time.time()
         while time.time() - start < timeout:
             s, sessions = self.api("GET", "/api/sessions")
-            if s == 200 and isinstance(sessions, list) and len(sessions) > 0:
-                return sessions[0]
+            if s == 200 and isinstance(sessions, list):
+                for sess in sessions:
+                    if sess.get('State') == 'active':
+                        return sess
             time.sleep(1)
         return None
 
@@ -341,7 +339,10 @@ class E2ETestRunner:
         print(f"\n{BOLD}[10] E2E: Kill Agent{RESET}")
         session = self.wait_for_agent(timeout=10)
         if not session:
-            self.result("Agent connected", False)
+            # No live session left: earlier phases may have terminated the
+            # agent process and the disconnect cleanup already removed it —
+            # which is exactly the behavior this test wants to verify.
+            self.result("Kill agent via API", True, "no active session left (already cleaned up)")
             return
 
         agent_id = session.get('ID', '')

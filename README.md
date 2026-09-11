@@ -37,10 +37,10 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🧩 REST API + JWT auth | ✅ Working | Access + refresh tokens (`token_use` claims), bcrypt operators |
 | 👥 RBAC | ✅ Working | `admin` / `operator` / `viewer` / `auditor` roles, per-endpoint permissions |
 | 📜 Audit log | ✅ Working | Actions stored in SQLite, SIEM forwarding hook |
-| 🔌 Modular task system | ✅ Working | Protobuf envelopes, dynamic module push (HMAC-verified manifests) |
+| 🔌 Modular task system | ✅ Working | Protobuf envelopes, dynamic module push; manifests HMAC-signed on registration and re-verified before every push (tampered manifests rejected) |
 | 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection |
 | 🌐 SOCKS5 / port-forward tunnels | ✅ Working | TCP relaying through agents |
-| 🗄️ SQLite storage | ✅ Working | Transactional migrations, encrypted-at-rest secrets support |
+| 🗄️ SQLite storage | ✅ Working | Transactional migrations; optional AES-256-GCM at-rest encryption for secrets (`WORLDC2_MASTER_KEY`) |
 | 🐳 Docker packaging | ✅ Working | Multi-stage build, non-root runtime user, healthcheck |
 | 🔄 DNS transport | 🧪 Experimental | Listener exists, not integrated with agent fallback chain |
 | 🕸️ WebRTC (Pion) | 📋 Planned | Not implemented — removed from docs until it is real |
@@ -176,9 +176,14 @@ WorldC2/
   cert for real deployments. If TLS is enabled but misconfigured, **the server refuses to start**
   instead of falling back to plaintext.
 - Agents pin the server certificate on first connect (TOFU) and reject changes afterwards.
+- Optional mutual TLS: set `tls.mtls: true`, issue a client certificate
+  (`POST /api/mtls/cert`, admin) and start the agent with `worldc2-agent -tls-cert agent.crt -tls-key agent.key`.
+  The CA is persisted across restarts, so issued certificates stay valid.
 - Every API request is rate-limited, size-limited and audited; refresh tokens cannot be used as
   access tokens.
-- The command validator and module manifests are HMAC-signed; module paths are sanitized against
+- Sensitive vault columns can be encrypted at rest with AES-256-GCM by setting `WORLDC2_MASTER_KEY`.
+- Module manifests are HMAC-signed when registered through the API and re-verified before every
+  push — tampered manifests are rejected at load and pack time; module paths are sanitized against
   traversal.
 
 ---

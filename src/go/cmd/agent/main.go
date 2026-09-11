@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -16,6 +17,8 @@ var DefaultServer = "127.0.0.1:8443"
 
 func main() {
 	serverAddr := flag.String("server", "", "C2 server address (host:port)")
+	tlsCert := flag.String("tls-cert", "", "Client certificate PEM (mTLS deployments, issued via POST /api/mtls/cert)")
+	tlsKey := flag.String("tls-key", "", "Client key PEM (mTLS deployments)")
 
 	// Also accept positional argument (./worldc2-agent 192.168.1.1:8443)
 	flag.Parse()
@@ -44,6 +47,21 @@ func main() {
 	}
 
 	a := agent.New(addr)
+
+	// Optional mTLS client certificate (server tls.mtls: true deployments)
+	if *tlsCert != "" || *tlsKey != "" {
+		if *tlsCert == "" || *tlsKey == "" {
+			fmt.Fprintln(os.Stderr, "-tls-cert and -tls-key must be provided together")
+			os.Exit(1)
+		}
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load client certificate: %v\n", err)
+			os.Exit(1)
+		}
+		a.SetClientCert(cert)
+		log.Println("[AGENT] mTLS client certificate loaded")
+	}
 
 	// Handle graceful shutdown
 	sigCh := make(chan os.Signal, 1)

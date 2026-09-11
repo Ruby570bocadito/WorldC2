@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,6 +51,25 @@ func New(level Level, jsonMode bool) *Logger {
 		outputs:  []io.Writer{os.Stderr},
 	}
 	return l
+}
+
+// ParseLevel converts a textual level ("debug", "info", "warn", "error",
+// "fatal") into a Level. Matching is case-insensitive.
+func ParseLevel(s string) (Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return DEBUG, nil
+	case "info", "":
+		return INFO, nil
+	case "warn", "warning":
+		return WARN, nil
+	case "error":
+		return ERROR, nil
+	case "fatal":
+		return FATAL, nil
+	default:
+		return INFO, fmt.Errorf("unknown log level %q", s)
+	}
 }
 
 // With returns a new logger with additional fields.

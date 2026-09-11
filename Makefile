@@ -1,5 +1,5 @@
 .PHONY: all build build-server build-agent build-agent-all clean test test-coverage test-all \
-        web web-dev docker docker-down harden certs fmt lint help
+	web web-dev docker docker-down harden certs fmt lint help
 
 # Default target
 all: build
@@ -32,8 +32,8 @@ web-dev:
 	cd web && npm run dev
 
 clean:
-	rm -rf dist worldc2-server worldc2-agent web/dist coverage.out coverage.html
-	rm -f worldc2.db
+	rm -rf dist web/dist src/go/coverage.out src/go/coverage.html
+	rm -f worldc2.db ctrlworldc2.db worldc2-server worldc2-agent
 
 ## test: run Go tests with the race detector
 test:

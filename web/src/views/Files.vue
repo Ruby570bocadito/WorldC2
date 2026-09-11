@@ -21,22 +21,22 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in files" :key="f.ID">
-            <td class="mono fw">{{ f.Filename || '—' }}</td>
-            <td class="num">{{ shortId(f.SessionID, 12) }}</td>
-            <td class="muted">{{ f.Module || '—' }}</td>
-            <td class="num">{{ fmtSize(f.Size) }}</td>
-            <td class="num">{{ fmtDate(f.Created) }}</td>
+          <tr v-for="f in files" :key="f.id">
+            <td class="mono fw">{{ f.filename || '—' }}</td>
+            <td class="num">{{ shortId(f.session_id, 12) }}</td>
+            <td class="muted">{{ f.module || '—' }}</td>
+            <td class="num">{{ fmtSize(f.size) }}</td>
+            <td class="num">{{ fmtDate(f.created) }}</td>
             <td>
               <button
                 class="icon-btn"
                 type="button"
-                :title="'Download ' + (f.Filename || 'file')"
+                :title="'Download ' + (f.filename || 'file')"
                 aria-label="Download file"
-                :disabled="downloading === f.ID"
+                :disabled="downloading === f.id"
                 @click="download(f)"
               >
-                <span v-if="downloading === f.ID" class="spinner" />
+                <span v-if="downloading === f.id" class="spinner" />
                 <IconDownload v-else :size="15" />
               </button>
             </td>
@@ -97,10 +97,10 @@ export default {
     },
     async download(f) {
       if (this.downloading) return
-      this.downloading = f.ID
+      this.downloading = f.id
       try {
         // GET /api/files/download/:id (Bearer auth via api layer)
-        await downloadFile('/api/files/download/' + encodeURIComponent(f.ID), f.Filename)
+        await downloadFile('/api/files/download/' + encodeURIComponent(f.id), f.filename)
       } catch (e) {
         if (!e.expired) notify.error('Download failed: ' + e.message)
       } finally {

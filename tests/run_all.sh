@@ -39,17 +39,17 @@ fi
 # === Phase 2: Docker Environment ===
 echo -e "\n${BOLD}[Phase 2] Docker Environment${RESET}"
 
-if command -v docker &> /dev/null && command -v docker-compose &> /dev/null; then
+if command -v docker &> /dev/null && docker compose version &> /dev/null; then
     echo -e "${CYAN}[2.1] Building Docker images...${RESET}"
     cd "$PROJECT_DIR"
-    docker-compose build --no-cache 2>&1 | tail -5
+    docker compose build --no-cache 2>&1 | tail -5
 
     echo -e "${CYAN}[2.2] Starting C2 server...${RESET}"
-    docker-compose up -d c2-server
+    docker compose up -d c2-server
 
     echo -e "${CYAN}[2.3] Waiting for server health...${RESET}"
     for i in $(seq 1 30); do
-        if curl -s -u admin:admin "$SERVER/api/health" | grep -q "ok"; then
+        if curl -sk "$SERVER/api/health" | grep -q "ok"; then
             echo -e "  ${GREEN}[OK]${RESET} Server is healthy"
             break
         fi
@@ -59,7 +59,7 @@ if command -v docker &> /dev/null && command -v docker-compose &> /dev/null; the
     echo
 
     echo -e "${CYAN}[2.4] Starting test agents...${RESET}"
-    docker-compose up -d agent-linux-1 agent-linux-2
+    docker compose up -d agent-linux-1 agent-linux-2
 
     echo -e "${CYAN}[2.5] Waiting for agent connections...${RESET}"
     sleep 10
@@ -86,8 +86,8 @@ python3 "$SCRIPT_DIR/stress_test.py" --server "$SERVER" --concurrent 50
 echo -e "\n${BOLD}[Phase 5] Security Checks${RESET}"
 
 echo -e "${CYAN}[5.1] Checking for hardcoded credentials...${RESET}"
-if grep -r "password.*admin" "$PROJECT_DIR/config.yaml" > /dev/null 2>&1; then
-    echo -e "  ${YELLOW}[WARN]${RESET} Default credentials in config.yaml"
+if grep -rn '\$2a\$10\$yu75' "$PROJECT_DIR/config.yaml" > /dev/null 2>&1; then
+    echo -e "  ${YELLOW}[WARN]${RESET} Example 'admin' bcrypt hash still present in config.yaml — change it before real use"
 fi
 
 echo -e "${CYAN}[5.2] Checking CORS configuration...${RESET}"
@@ -110,9 +110,9 @@ fi
 
 # === Cleanup ===
 echo -e "\n${BOLD}[Cleanup] Stopping Docker containers...${RESET}"
-if command -v docker-compose &> /dev/null; then
+if docker compose version &> /dev/null; then
     cd "$PROJECT_DIR"
-    docker-compose down 2>/dev/null || true
+    docker compose down 2>/dev/null || true
 fi
 
 echo -e "\n${BOLD}${GREEN}Test pipeline complete!${RESET}"

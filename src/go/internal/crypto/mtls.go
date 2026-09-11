@@ -174,3 +174,37 @@ func ExportPEM(cert *x509.Certificate, key *ecdsa.PrivateKey) (certPEM, keyPEM [
 
 	return certPEM, keyPEM, nil
 }
+
+// MarshalCA serializes a CA certificate and private key to PEM so the CA can
+// be persisted — client certificates would otherwise be invalidated by every
+// server restart if the CA were regenerated each boot.
+func MarshalCA(cert *x509.Certificate, key *ecdsa.PrivateKey) ([]byte, []byte, error) {
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal CA key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM, nil
+}
+
+// ParseCA restores a CA from PEM-encoded certificate and key.
+func ParseCA(certPEM, keyPEM []byte) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, nil, fmt.Errorf("decode CA certificate: empty PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse CA certificate: %w", err)
+	}
+	kb, _ := pem.Decode(keyPEM)
+	if kb == nil {
+		return nil, nil, fmt.Errorf("decode CA key: empty PEM")
+	}
+	key, err := x509.ParseECPrivateKey(kb.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse CA key: %w", err)
+	}
+	return cert, key, nil
+}

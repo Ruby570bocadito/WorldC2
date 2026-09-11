@@ -6,13 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR" || exit 1
 
-# Server binary: Makefile output first, then the committed src/go/server
-SERVER_BIN="$PROJECT_DIR/worldc2-server"
+# Server binary: Makefile output (dist/)
+SERVER_BIN="$PROJECT_DIR/dist/worldc2-server"
 if [ ! -x "$SERVER_BIN" ]; then
-    SERVER_BIN="$PROJECT_DIR/src/go/server"
-fi
-if [ ! -x "$SERVER_BIN" ]; then
-    echo "Server binary not found (build with: make build-server)" >&2
+    echo "Server binary not found at $SERVER_BIN (build with: make build-server)" >&2
     exit 1
 fi
 

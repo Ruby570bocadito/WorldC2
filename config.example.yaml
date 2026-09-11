@@ -17,11 +17,17 @@ transport:
   dns_domains: []
 
 database:
-  dsn: "worldc2.db"    # SQLite database file (PostgreSQL is planned, see README)
+  dsn: "worldc2.db"    # SQLite database file (the only supported backend)
+  # Optional: set the WORLDC2_MASTER_KEY environment variable to enable
+  # AES-256-GCM at-rest encryption for vault passwords and notes.
 
 tls:
   enabled: true
   auto_cert: true      # Generate a self-signed certificate on first start
+  mtls: false          # true = agents MUST present a client certificate issued
+                       # via POST /api/mtls/cert and started with
+                       # worldc2-agent -tls-cert agent.crt -tls-key agent.key
+  # min_version: "1.3" # "1.2" or "1.3" (default floor depends on profile)
   # To use your own certificate instead:
   #   auto_cert: false
   #   cert_file: "certs/server.crt"
@@ -30,11 +36,21 @@ tls:
 
 # Operators — the password field must be a bcrypt hash.
 # Generate one with:
+#   htpasswd -bnBC 10 "" 'YourPassword' | tr -d ':\n'
 #   python3 -c "import bcrypt; print(bcrypt.hashpw(b'YourPassword', bcrypt.gensalt()).decode())"
 #
 # If no operators are configured, the server creates a bootstrap 'admin'
 # account with a RANDOM password printed once in the startup log.
+#
+# The hash below matches the password 'admin' — FOR LOCAL TESTING ONLY.
+# CHANGE IT BEFORE ANY REAL USE.
 operators:
   - username: "admin"
-    password: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"  # Example hash of 'admin' — CHANGE IT BEFORE ANY REAL USE
+    password: "$2a$10$yu75.p9O4W2JquxanIvhX.IALFZ37TyXeKFPFtckyHQ5umOpmwiuO"  # bcrypt of 'admin' — FOR TESTING ONLY
     role: "admin"
+
+# Optional logging tuning (defaults: info / stdout)
+# logging:
+#   level: "info"       # debug | info | warn | error | fatal (or WORLDC2_LOG_LEVEL env)
+#   output: "stdout"    # stdout | file
+#   file: "worldc2.log"

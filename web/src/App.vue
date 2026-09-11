@@ -145,6 +145,9 @@ export default {
     $route() {
       this.authed = !!localStorage.getItem('bty_token')
       if (this.authed) {
+        // Refresh immediately so the topbar never shows stale zeros for
+        // the first polling interval after login.
+        this.fetchHealth()
         this.startPolling()
       } else {
         this.stopPolling()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -29,6 +30,7 @@ import (
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/reporting"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/siem"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/transport"
+	"golang.org/x/crypto/hkdf"
 	protobuf "google.golang.org/protobuf/proto"
 )
 
@@ -81,6 +83,53 @@ type Server struct {
 // SetAPIMux sets a custom API mux (used to avoid circular imports).
 func (s *Server) SetAPIMux(mux *http.ServeMux) { s.apiMux = mux }
 
+// applyTLSMinVersion sets the minimum TLS version from config ("1.2" or
+// "1.3"). Only explicit configuration overrides the built-in defaults so
+// the mTLS profile keeps its own floor when tls.min_version is unset.
+func applyTLSMinVersion(c *tls.Config, v string) {
+	switch v {
+	case "1.3":
+		c.MinVersion = tls.VersionTLS13
+	case "1.2":
+		c.MinVersion = tls.VersionTLS12
+	default:
+		log.Printf("[TLS] Unsupported tls.min_version %q (use \"1.2\" or \"1.3\") — keeping current floor", v)
+	}
+}
+
+// loadOrCreateCA loads the persisted mTLS CA from the secrets store, or
+// creates and persists a new one on first start. Regenerating the CA on
+// every boot (the old behavior) silently invalidated any client
+// certificates that had been issued.
+func loadOrCreateCA(database *db.DB) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	certPEM, cerr := database.GetSecret("mtls_ca_cert")
+	keyPEM, kerr := database.GetSecret("mtls_ca_key")
+	if cerr == nil && kerr == nil && len(certPEM) > 0 && len(keyPEM) > 0 {
+		cert, key, perr := crypto.ParseCA(certPEM, keyPEM)
+		if perr == nil {
+			log.Println("[MTLS] Loaded persisted CA certificate")
+			return cert, key, nil
+		}
+		log.Printf("[MTLS] Persisted CA unreadable (%v) — generating a new one", perr)
+	}
+	cert, key, err := crypto.GenerateCA()
+	if err != nil {
+		return nil, nil, err
+	}
+	certPEM, keyPEM, err = crypto.MarshalCA(cert, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := database.SetSecret("mtls_ca_cert", certPEM); err != nil {
+		return nil, nil, err
+	}
+	if err := database.SetSecret("mtls_ca_key", keyPEM); err != nil {
+		return nil, nil, err
+	}
+	log.Println("[MTLS] Generated and persisted new CA certificate")
+	return cert, key, nil
+}
+
 // mustRandom returns n cryptographically secure random bytes or panics.
 // Silent zero-filled keys would be catastrophic (forgeable HMACs, guessable
 // secrets), so a crypto/rand failure is treated as fatal.
@@ -92,11 +141,40 @@ func mustRandom(n int) []byte {
 	return b
 }
 
+// buildLogger honours the logging section of the config (level and optional
+// file output). WORLDC2_LOG_LEVEL overrides the configured level so container
+// deployments can tune verbosity without touching the YAML.
+func buildLogger(cfg config.LoggingConfig) *logger.Logger {
+	level := logger.INFO
+	if cfg.Level != "" {
+		if parsed, err := logger.ParseLevel(cfg.Level); err == nil {
+			level = parsed
+		} else {
+			log.Printf("[LOG] Unknown logging.level %q — using info", cfg.Level)
+		}
+	}
+	if env := os.Getenv("WORLDC2_LOG_LEVEL"); env != "" {
+		if parsed, err := logger.ParseLevel(env); err == nil {
+			level = parsed
+		} else {
+			log.Printf("[LOG] Unknown WORLDC2_LOG_LEVEL %q — ignoring", env)
+		}
+	}
+	l := logger.New(level, true)
+	if cfg.Output == "file" && cfg.File != "" {
+		f, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			log.Printf("[LOG] Cannot open log file %s: %v — logging to stderr only", cfg.File, err)
+			return l
+		}
+		l.AddOutput(f)
+		log.Printf("[LOG] Logging to %s", cfg.File)
+	}
+	return l
+}
+
 // New creates a new C2 server.
 func New(cfg *config.Config, database *db.DB) *Server {
-	// Generate a random HMAC key for module verification at startup
-	moduleHMACKey := mustRandom(32)
-
 	// Load or create persistent JWT secret
 	jwtSecret, err := database.GetSecret("jwt_signing_key")
 	if err != nil {
@@ -110,14 +188,27 @@ func New(cfg *config.Config, database *db.DB) *Server {
 		log.Println("[AUTH] Loaded existing JWT signing key")
 	}
 
-	// Initialize mTLS CA
-	caCert, caKey, err := crypto.GenerateCA()
+	// Derive a stable module-signing key from the persisted JWT secret
+	// (HKDF with a distinct info string — same root key, unrelated output
+	// domain). Deriving instead of generating randomly keeps module HMAC
+	// signatures verifiable across server restarts.
+	hkdfReader := hkdf.New(sha256.New, jwtSecret, nil, []byte("worldc2-module-signing-key"))
+	moduleHMACKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, moduleHMACKey); err != nil {
+		panic(fmt.Sprintf("derive module signing key: %v", err))
+	}
+
+	// Initialize mTLS CA — generated once and persisted in the secrets
+	// store, so issued client certificates remain valid across restarts.
+	var caCert *x509.Certificate
+	var caKey *ecdsa.PrivateKey
+	caCert, caKey, err = loadOrCreateCA(database)
 	mtlsEnabled := false
 	if err != nil {
-		log.Printf("[MTLS] Warning: failed to generate CA: %v", err)
+		log.Printf("[MTLS] Warning: failed to initialize CA: %v", err)
 	} else {
 		mtlsEnabled = true
-		log.Println("[MTLS] Generated CA certificate for mutual TLS authentication")
+		log.Println("[MTLS] CA certificate ready")
 	}
 
 	return &Server{
@@ -125,7 +216,7 @@ func New(cfg *config.Config, database *db.DB) *Server {
 		db:           database,
 		tokenManager: auth.NewTokenManager(jwtSecret, 12*time.Hour),
 		rbac:         auth.NewRBAC(),
-		log:          logger.New(logger.INFO, true),
+		log:          buildLogger(cfg.Logging),
 		caCert:       caCert,
 		caKey:        caKey,
 		mtlsEnabled:  mtlsEnabled,
@@ -149,33 +240,45 @@ func (s *Server) Start() error {
 	// plaintext when the operator asked for TLS but no certificate is
 	// available.
 	if s.cfg.TLS.Enabled {
+		var cert tls.Certificate
 		switch {
 		case s.cfg.TLS.CertFile != "" && s.cfg.TLS.KeyFile != "":
-			cert, err := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+			var err error
+			cert, err = tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 			if err != nil {
 				return fmt.Errorf("load TLS cert/key: %w", err)
 			}
 			s.tlsCert = cert
-			s.tlsConfig = &tls.Config{
-				Certificates: []tls.Certificate{cert},
-				MinVersion:   tls.VersionTLS12,
-			}
 			log.Printf("[TLS] Loaded certificate from %s", s.cfg.TLS.CertFile)
 		case s.cfg.TLS.AutoCert:
-			cert, err := transport.GenerateSelfSignedCert(s.cfg.Server.Host)
+			var err error
+			cert, err = transport.GenerateSelfSignedCert(s.cfg.Server.Host)
 			if err != nil {
 				return fmt.Errorf("generate TLS cert: %w", err)
 			}
 			s.tlsCert = cert
-			// Use mTLS if CA is available
-			if s.mtlsEnabled && s.caCert != nil && s.caKey != nil {
-				s.tlsConfig = crypto.NewMTLSServerConfig(cert, s.caCert)
-				log.Printf("[MTLS] Mutual TLS enabled — agents require client certificates")
-			} else {
-				s.tlsConfig = transport.NewTLSConfig(cert)
-			}
 		default:
 			return fmt.Errorf("tls.enabled=true but no certificate configured: set tls.auto_cert=true or tls.cert_file/tls.key_file")
+		}
+
+		// Optional mutual TLS (tls.mtls: true): agents must present a
+		// client certificate issued via POST /api/mtls/cert and load it
+		// with worldc2-agent -tls-cert/-tls-key. Off by default — with
+		// no cert loaded the agent handshake can never complete.
+		if s.mtlsEnabled && s.cfg.TLS.MTLS {
+			s.tlsConfig = crypto.NewMTLSServerConfig(cert, s.caCert)
+			log.Printf("[MTLS] Mutual TLS enforced — agents require issued client certificates")
+		} else if s.cfg.TLS.CertFile != "" && s.cfg.TLS.KeyFile != "" {
+			s.tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			}
+		} else {
+			s.tlsConfig = transport.NewTLSConfig(cert)
+		}
+
+		if s.tlsConfig != nil && s.cfg.TLS.MinVersion != "" {
+			applyTLSMinVersion(s.tlsConfig, s.cfg.TLS.MinVersion)
 		}
 	}
 

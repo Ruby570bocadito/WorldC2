@@ -67,6 +67,9 @@ type Agent struct {
 	// Certificate pinning
 	certPinner *CertPinner
 
+	// Optional mTLS client certificate (provisioned via /api/mtls/client-cert)
+	clientCert *tls.Certificate
+
 	// Channels
 	tasks   chan *proto.Task
 	results chan *proto.TaskResult
@@ -198,6 +201,11 @@ func (a *Agent) waitBackoff() {
 	a.backoffCurrent = minDuration(a.backoffCurrent*2+backoffJitter, a.backoffMax)
 }
 
+// SetClientCert attaches an optional mTLS client certificate used on every
+// TLS dial (provisioned with POST /api/mtls/client-cert when the server
+// enforces tls.mtls).
+func (a *Agent) SetClientCert(cert tls.Certificate) { a.clientCert = &cert }
+
 func (a *Agent) connect() error {
 	host, port, _ := net.SplitHostPort(a.serverAddr)
 	if host == "" {
@@ -236,6 +244,9 @@ func (a *Agent) connect() error {
 					MinVersion:         tls.VersionTLS12,
 					ServerName:         host,
 				}
+				if a.clientCert != nil {
+					tlsConfig.Certificates = []tls.Certificate{*a.clientCert}
+				}
 				dialer := &net.Dialer{Timeout: 10 * time.Second}
 				conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, port), tlsConfig)
 				if err == nil {
@@ -244,6 +255,9 @@ func (a *Agent) connect() error {
 					if len(state.PeerCertificates) > 0 {
 						fp := GetFingerprintFromCert(state.PeerCertificates[0])
 						a.certPinner = NewCertPinner(fp, host)
+						if a.clientCert != nil {
+							a.certPinner.SetClientCert(*a.clientCert)
+						}
 						log.Printf("[AGENT] Pinned server certificate on first connect: %s", fp[:16]+"...")
 					}
 				}
@@ -267,7 +281,7 @@ func (a *Agent) connect() error {
 			name: "WebSocket",
 			dial: func() (net.Conn, error) {
 				wsPort := "8446"
-				return dialWebSocket(host, wsPort)
+				return dialWebSocket(host, wsPort, a.clientCert)
 			},
 		},
 	}
@@ -437,13 +451,17 @@ func (c *wsConn) SetWriteDeadline(t time.Time) error {
 }
 
 // dialWebSocket establishes a WebSocket connection to the server.
-func dialWebSocket(host, port string) (net.Conn, error) {
+func dialWebSocket(host, port string, clientCert *tls.Certificate) (net.Conn, error) {
 	addr := net.JoinHostPort(host, port)
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{
+	wsTLSConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS12,
 		ServerName:         host,
-	})
+	}
+	if clientCert != nil {
+		wsTLSConfig.Certificates = []tls.Certificate{*clientCert}
+	}
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, wsTLSConfig)
 	if err != nil {
 		return nil, err
 	}

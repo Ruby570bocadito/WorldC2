@@ -1,5 +1,66 @@
 # WorldC2 — Changelog
 
+## v1.1.1 — QA pass (2026-09-11)
+
+Second review round: everything the first pass missed or broke.
+
+### Fixed
+
+- **Agents could never connect (found live)**: the server unconditionally enforced
+  `RequireAndVerifyClientCert` (mTLS) while the agent shipped no client certificate and no
+  provisioning flow existed — under TLS 1.3 the dial succeeded and the first write died with
+  `broken pipe`. mTLS is now opt-in (`tls.mtls: true`), the CA is persisted in the secrets store
+  (previously regenerated every boot, invalidating issued certs), and the agent accepts
+  `-tls-cert/-tls-key` on every transport (TLS/WebSocket) for hardened deployments. Default
+  mode: server TLS + agent-side certificate pinning (TOFU), as documented.
+- **Files view rendered empty rows**: `Files.vue` read PascalCase fields (`f.Filename`) while the
+  API returns lowercase JSON (`filename`) — every cell showed "—". Field names aligned.
+- **Topbar showed `0 sess · 0 listeners` after login**: health was only fetched on the 5s
+  interval, never immediately after authentication. Now refreshed on route change.
+- **Example config login**: the bcrypt hash shipped in `config.example.yaml` did **not** match
+  `admin` — the documented demo login (and with it the whole API test suite) returned 401.
+  Replaced with a verified hash of `admin`, clearly marked FOR TESTING ONLY.
+- **Test tooling looked for binaries in the wrong place**: `e2e_test.py`, `pentest.py` and
+  `quick_test.sh` referenced the deleted 21 MB `src/go/server` commit; they now use the Makefile
+  output at `dist/`.
+- **CI double-start**: the E2E and pentest steps started an external server *and* the test
+  scripts started their own — guaranteed port conflicts. Scripts now self-manage.
+- **`make` was completely broken**: recipes were indented with 8 spaces instead of TABs
+  ("missing separator"). All targets now parse; `clean` paths fixed (coverage artifacts live in
+  `src/go/`).
+
+### Security / correctness
+
+- **Module manifest HMAC is now enforced**: manifests signed through the API are re-verified at
+  load and pack time (tampered or foreign-key manifests are rejected); `Verify()` no longer
+  mutates shared state; the signing key is derived via HKDF from the persisted JWT secret so
+  signatures survive restarts.
+- **At-rest encryption is reachable**: `WORLDC2_MASTER_KEY` environment variable enables the
+  AES-256-GCM encryptor for vault secrets and notes (previously dead code).
+- **Logging is configurable**: `logging.level/output/file` in YAML and `WORLDC2_LOG_LEVEL` env
+  are honoured (previously hardcoded INFO/stderr and a dead compose env).
+- **`tls.min_version` is honoured** (`1.2`/`1.3`) for server-side TLS.
+- Non-mutating module `Verify()` (race-safe against concurrent `List()`).
+
+### Removed
+
+- Dead code: `c2/validation.go` (superseded by `handlers/validate.go`), `db/audit_rotation.go`
+  (never instantiated). Config fields that described agent behavior the server cannot control
+  (`heartbeat_interval`, `reconnect_max_backoff`) and the unsupported `database.driver` option.
+
+### Docs / packaging
+
+- `api/openapi.yaml`: removed duplicated `BearerAuth` definitions, fixed `uptime` →
+  `uptime_seconds`, fixed a corrupted `required` field, added the 12 missing routes
+  (login/refresh, operators, notes, lock, profiles, report, webhooks, mTLS cert, file download,
+  module delete).
+- Dockerfile: CGO_ENABLED=0 (modernc.org/sqlite is pure Go), honest comment, added
+  `.dockerignore` (node_modules/dist/db files no longer enter the build context).
+- `docker-compose.yml`: dropped obsolete `version:` key; `WORLDC2_LOG_LEVEL` is now live.
+- `scripts/healthcheck.sh`: uses the public `/api/health` endpoint instead of inventing Basic
+  auth; `tests/run_all.sh` uses `docker compose` v2.
+- Developer guide / quick reference: corrected target names and bcrypt cost.
+
 ## v1.1 — Engineering overhaul (2026-09-11)
 
 Full audit-driven pass: critical bug fixes, control-plane hardening, honest docs, rebuilt console.
@@ -31,7 +92,9 @@ Full audit-driven pass: critical bug fixes, control-plane hardening, honest docs
   (slowloris), `max_sessions` enforced, accept-loop backoff.
 - **Path traversal**: `session_id` in file storage and module names/manifest filenames sanitized.
 - **Module HMAC actually verifies now** (sign & verify over the same canonical serialization;
-  previously indented-vs-compact JSON mismatch made `Verify` always false).
+  previously indented-vs-compact JSON mismatch made `Verify` always false). In v1.1.1 verification
+  is enforced: manifests signed via the API are re-checked at load and pack time, and the signing
+  key is derived (HKDF) from the persisted JWT secret so signatures survive restarts.
 - **SQLite migrations run inside transactions**; `splitSQL` splits statements properly
   (quotes/comments aware) instead of concatenating everything into one statement.
 - **Bootstrap admin**: no more silent `admin/admin` — a random password is generated and printed

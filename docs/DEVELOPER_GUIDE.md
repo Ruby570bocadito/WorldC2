@@ -94,7 +94,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | Encryption | XChaCha20-Poly1305 | Message confidentiality + integrity |
 | Key Derivation | HKDF-SHA256 | Derive encKey, hmacKey, sessionToken |
 | Session Token | HMAC-SHA256 | Message authentication |
-| Password Hash | bcrypt (cost 12) | Operator password storage |
+| Password Hash | bcrypt (cost 10) | Operator password storage |
 | Module HMAC | HMAC-SHA256 | Module integrity verification |
 
 ## Session States
@@ -161,7 +161,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 ### Build
 ```bash
 make build          # Server + Agent
-make build-all      # All platforms
+make build-agent-all # All agent platforms
 make test           # Go tests
 make docker         # Docker environment
 ```

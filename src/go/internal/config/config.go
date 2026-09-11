@@ -29,12 +29,10 @@ type TransportConfig struct {
 
 // ServerConfig holds C2 listener configuration.
 type ServerConfig struct {
-	Host                string        `yaml:"host"`
-	Port                uint16        `yaml:"port"`
-	MaxSessions         uint32        `yaml:"max_sessions"`
-	HeartbeatInterval   time.Duration `yaml:"heartbeat_interval"`
-	SessionTimeout      time.Duration `yaml:"session_timeout"`
-	ReconnectMaxBackoff time.Duration `yaml:"reconnect_max_backoff"`
+	Host           string        `yaml:"host"`
+	Port           uint16        `yaml:"port"`
+	MaxSessions    uint32        `yaml:"max_sessions"`
+	SessionTimeout time.Duration `yaml:"session_timeout"`
 }
 
 // APIConfig holds REST API configuration.
@@ -44,8 +42,7 @@ type APIConfig struct {
 
 // DatabaseConfig holds database connection info.
 type DatabaseConfig struct {
-	Driver string `yaml:"driver"` // "sqlite" or "postgres"
-	DSN    string `yaml:"dsn"`
+	DSN string `yaml:"dsn"` // SQLite database file
 }
 
 // TLSConfig holds TLS certificate configuration.
@@ -54,6 +51,7 @@ type TLSConfig struct {
 	CertFile   string `yaml:"cert_file"`
 	KeyFile    string `yaml:"key_file"`
 	AutoCert   bool   `yaml:"auto_cert"`   // Auto-generate self-signed
+	MTLS       bool   `yaml:"mtls"`        // Require agent client certificates (provision via /api/mtls/client-cert)
 	MinVersion string `yaml:"min_version"` // "1.2" or "1.3"
 }
 
@@ -75,12 +73,10 @@ type OperatorConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host:                "0.0.0.0",
-			Port:                8443,
-			MaxSessions:         5000,
-			HeartbeatInterval:   30 * time.Second,
-			SessionTimeout:      5 * time.Minute,
-			ReconnectMaxBackoff: 5 * time.Minute,
+			Host:           "0.0.0.0",
+			Port:           8443,
+			MaxSessions:    5000,
+			SessionTimeout: 5 * time.Minute,
 		},
 		API: APIConfig{
 			Port: 9090,
@@ -92,12 +88,12 @@ func DefaultConfig() *Config {
 			DNSDomains: []string{},
 		},
 		Database: DatabaseConfig{
-			Driver: "sqlite",
-			DSN:    "ctrlworldc2.db",
+			DSN: "worldc2.db",
 		},
 		TLS: TLSConfig{
 			Enabled:    true,
 			AutoCert:   true,
+			MTLS:       false,
 			MinVersion: "1.3",
 		},
 		Logging: LoggingConfig{
