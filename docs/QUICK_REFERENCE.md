@@ -35,22 +35,32 @@ worldc2 > broadcast id
 curl http://localhost:9090/api/health
 
 # List sessions
-curl -u admin:admin http://localhost:9090/api/sessions
+# 1. Authenticate (one time)
+TOKEN=$(curl -s -X POST http://localhost:9090/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<your-password>"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+# 2. Use the token on every call
+curl -s http://localhost:9090/api/sessions -H "Authorization: Bearer $TOKEN"
 
 # Execute command
-curl -u admin:admin -X POST http://localhost:9090/api/cmd \
+curl -s -X POST http://localhost:9090/api/cmd \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"agent_id":"abc123","command":"whoami","timeout":10}'
 
 # Broadcast
-curl -u admin:admin -X POST http://localhost:9090/api/broadcast \
+curl -s -X POST http://localhost:9090/api/broadcast \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"command":"id"}'
 
 # Store credential
-curl -u admin:admin -X POST http://localhost:9090/api/vault \
+curl -s -X POST http://localhost:9090/api/vault \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"username":"admin","password":"pass123","domain":"CORP"}'
 
 # Start SOCKS proxy
-curl -u admin:admin -X POST http://localhost:9090/api/socks \
+curl -s -X POST http://localhost:9090/api/socks \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"session_id":"abc123","port":1080}'
 ```
 

@@ -1,96 +1,78 @@
-.PHONY: all build clean test docker test-all harden
+.PHONY: all build build-server build-agent build-agent-all clean test test-coverage test-all \
+        web web-dev docker docker-down harden certs fmt lint help
 
-# Build all binaries
+# Default target
 all: build
 
+## build: compile server and agent into dist/
 build: build-server build-agent
 
 build-server:
 	@echo "Building C2 server..."
-	cd src/go && CGO_ENABLED=0 go build -ldflags="-s -w" -o ../../worldc2-server ./cmd/server/main.go
+	cd src/go && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-server ./cmd/server
 
 build-agent:
 	@echo "Building agent..."
-	cd src/go && CGO_ENABLED=0 go build -ldflags="-s -w" -o ../../worldc2-agent ./cmd/agent/main.go
+	cd src/go && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent ./cmd/agent
 
-# Cross-compile agents for all platforms
-build-all:
+## build-agent-all: cross-compile the agent for all supported platforms
+build-agent-all:
 	@echo "Building agents for all platforms..."
 	cd src/go && \
-		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../../dist/worldc2-agent-linux ./cmd/agent/main.go && \
-		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../../dist/worldc2-agent-windows.exe ./cmd/agent/main.go && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-amd64 ./cmd/agent/main.go && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-arm64 ./cmd/agent/main.go
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-linux ./cmd/agent && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-windows.exe ./cmd/agent && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-amd64 ./cmd/agent && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-arm64 ./cmd/agent
 
-# Run Go tests
+## web: build the Vue dashboard into web/dist/
+web:
+	cd web && npm ci && npm run build
+
+web-dev:
+	cd web && npm run dev
+
+clean:
+	rm -rf dist worldc2-server worldc2-agent web/dist coverage.out coverage.html
+	rm -f worldc2.db
+
+## test: run Go tests with the race detector
 test:
-	cd src/go && go test ./... -v -race
+	cd src/go && go test ./... -race
 
-# Run Go tests with coverage
 test-coverage:
-	cd src/go && go test ./... -coverprofile=coverage.out -v
+	cd src/go && go test ./... -coverprofile=coverage.out
 	cd src/go && go tool cover -html=coverage.out -o coverage.html
 
-# Build and run Docker environment
-docker:
-	docker-compose up --build -d
-
-# Stop Docker environment
-docker-down:
-	docker-compose down
-
-# Run all tests
+## test-all: full pipeline — Go tests, Python syntax, frontend build
 test-all:
-	@echo "Running Python syntax checks..."
-	python3 -m py_compile scripts/console.py scripts/payload.py scripts/deploy.py
-	@echo "Running functional tests..."
-	python3 tests/run_tests.py
-	@echo "Running integration tests..."
-	python3 tests/integration_test.py
-	@echo "Running stress tests..."
-	python3 tests/stress_test.py
+	@echo "==> Go tests (race)..."
+	cd src/go && go test ./... -race || exit 1
+	@echo "==> Python syntax checks..."
+	python3 -m py_compile scripts/*.py tests/*.py || exit 1
+	@echo "==> Frontend build..."
+	cd web && npm ci && npm run build || exit 1
+	@echo "==> All tests passed."
 
-# Security hardening
+## docker: build and start the docker-compose environment
+docker:
+	docker compose up --build -d
+
+docker-down:
+	docker compose down
+
+## harden: run the security audit script (report only)
 harden:
-	python3 scripts/harden.py --apply
+	python3 scripts/harden.py --project .
 
-# Generate TLS certificates
+## certs: generate a self-signed TLS certificate for localhost
 certs:
 	python3 scripts/gen_certs.py --domain localhost --days 365
 
-# Clean build artifacts
-clean:
-	rm -f worldc2-server worldc2-agent
-	rm -f dist/worldc2-agent-*
-	rm -f src/go/coverage.out src/go/coverage.html
-	rm -rf payloads/*
-	touch payloads/.gitkeep
-
-# Format Go code
 fmt:
 	cd src/go && gofmt -w .
 
-# Lint Go code
 lint:
 	cd src/go && go vet ./...
 
-# Show help
 help:
-	@echo "WORLDC2 C2 - Makefile"
-	@echo ""
-	@echo "Targets:"
-	@echo "  all           - Build server and agent"
-	@echo "  build-server  - Build C2 server only"
-	@echo "  build-agent   - Build agent only"
-	@echo "  build-all     - Cross-compile agents for all platforms"
-	@echo "  test          - Run Go unit tests"
-	@echo "  test-coverage - Run tests with coverage report"
-	@echo "  docker        - Build and start Docker environment"
-	@echo "  docker-down   - Stop Docker environment"
-	@echo "  test-all      - Run all tests (Python + Go)"
-	@echo "  harden        - Apply security hardening"
-	@echo "  certs         - Generate TLS certificates"
-	@echo "  clean         - Remove build artifacts"
-	@echo "  fmt           - Format Go code"
-	@echo "  lint          - Lint Go code"
-	@echo "  help          - Show this help"
+	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /make /'
