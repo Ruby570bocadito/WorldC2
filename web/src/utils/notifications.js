@@ -1,6 +1,6 @@
 // WorldC2 — toast notifications.
 // Minimal dark toasts, bottom-right, auto-dismiss after 4s.
-// Security: message is ALWAYS rendered via textContent — never innerHTML.
+// Security: message is ALWAYS rendered via textContent, never raw HTML sinks.
 
 let container = null
 

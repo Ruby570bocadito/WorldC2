@@ -88,15 +88,15 @@ components:
     TaskResult:
       type: object
       properties:
-        TaskId:
+        task_id:
           type: string
-        Output:
+        output:
           type: string
-        ExitCode:
+        exit_code:
           type: integer
-        Success:
+        success:
           type: boolean
-        ErrorMessage:
+        error_message:
           type: string
 
     BroadcastRequest:
@@ -645,13 +645,21 @@ paths:
 
   /api/notes:
     get:
-      summary: List operator notes for sessions
+      summary: List operator notes for a session
       tags: [Collaboration]
       security:
         - BearerAuth: []
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: List of notes
+        '400':
+          description: Missing session_id
     post:
       summary: Add or update a note for a session
       tags: [Collaboration]
@@ -663,11 +671,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [session_id, note]
+              required: [session_id, content]
               properties:
                 session_id:
                   type: string
-                note:
+                content:
                   type: string
       responses:
         '200':
@@ -718,7 +726,16 @@ paths:
         - BearerAuth: []
       responses:
         '200':
-          description: Report document
+          description: Report generation result (JSON with output path and status)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                  status:
+                    type: string
 
   /api/webhooks:
     get:
@@ -739,11 +756,21 @@ paths:
           description: Webhook registered
 
   /api/mtls/cert:
-    get:
-      summary: Download the mTLS CA certificate (admin only)
-      tags: [mTLS]
+    post:
+      summary: Issue an mTLS client certificate (admin only)
+      tags: [TLS]
       security:
         - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id:
+                  type: string
       responses:
         '200':
-          description: CA certificate (PEM)
+          description: 'Issued certificate material (JSON: cert_pem, key_pem, ca_pem)'

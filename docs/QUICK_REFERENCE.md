@@ -73,9 +73,9 @@ python3 scripts/gen_certs.py           # TLS certs
 
 ## Docker
 ```bash
-docker-compose up -d                   # Start all
-docker-compose logs -f c2-server       # View logs
-docker-compose down                    # Stop
+docker compose up -d                   # Start all
+docker compose logs -f c2-server       # View logs
+docker compose down                    # Stop
 ```
 
 ## Make

@@ -20,7 +20,6 @@ services:
       - "8446:8446"
       - "9090:9090"
     volumes:
-      - ./data:/app/data
       - ./loot:/app/loot
       - ./modules:/app/modules
     environment:

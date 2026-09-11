@@ -1,5 +1,34 @@
 # WorldC2 — Changelog
 
+## v1.1.2 — Polish pass (2026-09-11)
+
+Third review round: static-analysis cleanliness and spec-vs-handler alignment.
+
+### Fixed
+
+- **`go vet` is now 100% clean**: the five `unsafe.Pointer` misuse warnings in the evasion
+  package are gone — XOR loops operate through a single `unsafe.Slice` view, `MarkSensitive`
+  takes a caller-provided pointer instead of a raw `uintptr` round-trip, and the dead
+  `SpoofCallStack` stub (whose comment promised an `asm_amd64.s` that never existed) was removed.
+- **CI XSS-sink check false positive**: the gate greps for `v-html|innerHTML` in `web/src` — a
+  code *comment* mentioning innerHTML tripped it on every push. Comment reworded; real sinks
+  remain zero.
+- **CI secrets-scan false positive**: the credential pattern matched `argparse help="Password"`
+  strings. `add_argument` joined the exclusion list — genuine assignments still fail the build.
+- **`api/openapi.yaml` aligned with the actual handlers**: `/api/mtls/cert` is POST (issue
+  certificate, JSON `cert_pem/key_pem/ca_pem`) not GET; `/api/notes` POST requires `content`
+  (not `note`) and GET requires the `session_id` query parameter; `TaskResult` fields are
+  `snake_case` as the protobuf tags really emit; `/api/report` documents its JSON
+  `{path, status}` response.
+- **Broken ANSI colors in `tests/run_all.sh` + `docker_test.sh`**: color vars were defined as
+  `"\033"` (no SGR code) — banners and status markers printed as garbage. Full codes now.
+
+### Removed
+
+- `scripts/healthcheck.sh` (orphaned — the Dockerfile inlines its own HEALTHCHECK).
+- Dead volume `./data:/app/data` in `docker-compose.yml` (nothing writes there; DB is a file in
+  `/app`, loot and modules have their own mounts).
+
 ## v1.1.1 — QA pass (2026-09-11)
 
 Second review round: everything the first pass missed or broke.
@@ -57,8 +86,8 @@ Second review round: everything the first pass missed or broke.
 - Dockerfile: CGO_ENABLED=0 (modernc.org/sqlite is pure Go), honest comment, added
   `.dockerignore` (node_modules/dist/db files no longer enter the build context).
 - `docker-compose.yml`: dropped obsolete `version:` key; `WORLDC2_LOG_LEVEL` is now live.
-- `scripts/healthcheck.sh`: uses the public `/api/health` endpoint instead of inventing Basic
-  auth; `tests/run_all.sh` uses `docker compose` v2.
+- `scripts/healthcheck.sh` was dropped in v1.1.2 (the Dockerfile inlines an honest HEALTHCHECK);
+  `tests/run_all.sh` uses `docker compose` v2.
 - Developer guide / quick reference: corrected target names and bcrypt cost.
 
 ## v1.1 — Engineering overhaul (2026-09-11)

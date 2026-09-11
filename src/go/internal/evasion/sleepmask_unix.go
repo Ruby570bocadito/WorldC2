@@ -8,16 +8,19 @@ import (
 )
 
 // lockMemoryRegions changes memory protection from RWX to RX using mprotect.
+// Region pointers are required to be page-aligned by MarkSensitive.
 func (sm *SleepMask) lockMemoryRegions() {
 	for i := range sm.regions {
 		r := &sm.regions[i]
-		if r.size == 0 {
+		if r.size == 0 || r.ptr == nil {
 			continue
 		}
 		pageSize := syscall.Getpagesize()
-		addr := r.addr & ^(uintptr(pageSize) - 1)
 		size := ((r.size + pageSize - 1) / pageSize) * pageSize
-		slice := unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+		if size <= 0 {
+			continue
+		}
+		slice := unsafe.Slice((*byte)(r.ptr), size)
 		syscall.Mprotect(slice, syscall.PROT_READ|syscall.PROT_EXEC)
 	}
 }
@@ -26,15 +29,15 @@ func (sm *SleepMask) lockMemoryRegions() {
 func (sm *SleepMask) unlockMemoryRegions() {
 	for i := range sm.regions {
 		r := &sm.regions[i]
-		if r.size == 0 {
+		if r.size == 0 || r.ptr == nil {
 			continue
 		}
 		pageSize := syscall.Getpagesize()
-		addr := r.addr & ^(uintptr(pageSize) - 1)
 		size := ((r.size + pageSize - 1) / pageSize) * pageSize
-		slice := unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+		if size <= 0 {
+			continue
+		}
+		slice := unsafe.Slice((*byte)(r.ptr), size)
 		syscall.Mprotect(slice, syscall.PROT_READ|syscall.PROT_WRITE|syscall.PROT_EXEC)
 	}
 }
-
-var _ = unsafe.Pointer(nil)

