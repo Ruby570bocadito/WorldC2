@@ -23,6 +23,7 @@ type Config struct {
 type TransportConfig struct {
 	HTTPPort   uint16   `yaml:"http_port"`
 	WSPort     uint16   `yaml:"ws_port"`
+	WebRTCPort uint16   `yaml:"webrtc_port"` // 0 disables the WebRTC transport
 	DNSPort    uint16   `yaml:"dns_port"`
 	DNSDomains []string `yaml:"dns_domains"`
 }
@@ -84,6 +85,7 @@ func DefaultConfig() *Config {
 		Transport: TransportConfig{
 			HTTPPort:   8445,
 			WSPort:     8446,
+			WebRTCPort: 8447,
 			DNSPort:    0,
 			DNSDomains: []string{},
 		},

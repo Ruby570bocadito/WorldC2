@@ -1,5 +1,51 @@
 # WorldC2 — Changelog
 
+## v1.2.0 — Roadmap completion: WebRTC transport, resumable exfil, DNS in the agent chain (2026-09-11)
+
+All three features the feature matrix marked as *Planned/Experimental* are now real, wired
+end-to-end and covered by tests (`go test ./... -race` green, including loopback integration
+tests for the new transports).
+
+### Added
+
+- **WebRTC transport (Pion)** — `internal/transport/webrtc.go`:
+  - Server: `WebRTCListener` with an HTTP(S) signaling endpoint (`POST /webrtc/offer`,
+    non-trickle ICE, mDNS candidates disabled), data channels detached and adapted to
+    `net.Conn` so the existing C2 session/envelope protocol runs unchanged.
+  - Agent: `transport.DialWebRTC` performs the client half of signaling and joins the
+    transport fallback chain (TLS → TCP → HTTP → WebSocket → **WebRTC** → DNS), port 8447.
+  - Config: `transport.webrtc_port` (0 disables); TLS signaling reuses the server cert.
+  - Test: in-process loopback roundtrip (signaling + ICE + data channel + adapter).
+- **Resumable chunked file exfiltration** — `internal/c2/exfil.go`, `internal/agent/exfil.go`:
+  - New agent commands: `exfil:<path>` (file or directory, auto-zip) and
+    `exfil_find:<root>|<pattern>`.
+  - Deterministic transfer IDs (`sha256(hostname|path|size|mtime)[:16]`) so retries map to
+    the same partial upload; server assembles chunks into `<loot>/.parts/<id>.part`,
+    verifying a SHA-256 digest on completion.
+  - Resume: gaps trigger an `__exfil_resume <id> <offset>` task back to the agent, which
+    seeks and continues. Partial data survives agent reconnects **and** server restarts.
+  - Files finalize into the normal loot listing (`FileManager.Finalize`).
+- **DNS transport integrated in the agent fallback chain** (opt-in): new
+  `-dns-domain` flag; server keeps `transport.dns_port` + `dns_domains`.
+
+### Fixed
+
+- **DNS protocol bugs** (the tunnel previously corrupted or dropped data):
+  - Client sent unpadded URL-base64 labels; server decoded with padded StdEncoding — labels
+    whose length was not a multiple of 4 silently failed. Both sides now use `RawURLEncoding`.
+  - Server decoded the session-id label as payload (garbage prefix on every message); the
+    session label is now skipped.
+  - Client truncated payloads at 50 chars (data loss for anything bigger); payloads now split
+    across labels with write-side chunking that respects the 253-byte DNS name limit.
+  - Client TXT parser ignored per-string length bytes (corruption on >255-byte responses);
+    parser now walks every character-string.
+  - `buildDNSResponse` allocated `len(query)+256` bytes and wrote beyond it for larger
+    payloads (server panic); buffer is now sized from the payload.
+  - Per-packet goroutines could reorder tunnel bytes; queries are now handled FIFO.
+  - Agent reads poll with bounded retries instead of failing the session on the first
+    empty response.
+
+
 ## v1.1.2 — Polish pass (2026-09-11)
 
 Third review round: static-analysis cleanliness and spec-vs-handler alignment.

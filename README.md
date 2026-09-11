@@ -42,9 +42,9 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🌐 SOCKS5 / port-forward tunnels | ✅ Working | TCP relaying through agents |
 | 🗄️ SQLite storage | ✅ Working | Transactional migrations; optional AES-256-GCM at-rest encryption for secrets (`WORLDC2_MASTER_KEY`) |
 | 🐳 Docker packaging | ✅ Working | Multi-stage build, non-root runtime user, healthcheck |
-| 🔄 DNS transport | 🧪 Experimental | Listener exists, not integrated with agent fallback chain |
-| 🕸️ WebRTC (Pion) | 📋 Planned | Not implemented — removed from docs until it is real |
-| 📈 File exfil resume | 📋 Planned | Not implemented |
+| 🔄 DNS transport | ✅ Working | TXT tunneling integrated in the agent fallback chain (opt-in: `worldc2-agent -dns-domain your.domain`) |
+| 🕸️ WebRTC transport | ✅ Working | Pion data channels with HTTP signaling (port 8447), detached channel adapted as `net.Conn`; covered by a loopback roundtrip test |
+| 📈 Resumable file exfil | ✅ Working | `exfil:<path>` streams chunked uploads; server reassembles, survives reconnects/restarts and resumes from the exact byte via `__exfil_resume` tasks |
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.

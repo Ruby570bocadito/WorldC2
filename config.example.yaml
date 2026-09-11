@@ -13,6 +13,7 @@ api:
 transport:
   http_port: 8445
   ws_port: 8446
+  webrtc_port: 8447   # WebRTC data-channel transport (HTTP signaling on the same port); 0 disables
   dns_port: 0          # DNS transport is experimental; 0 disables it
   dns_domains: []
 
