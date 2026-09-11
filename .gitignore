@@ -77,3 +77,7 @@ src/go/server
 src/go/worldc2-server
 src/go/worldc2-agent
 src/go/*.db
+
+# SQLite sidecar files
+*.db-shm
+*.db-wal
