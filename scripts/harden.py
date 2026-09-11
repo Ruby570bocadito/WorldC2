@@ -8,7 +8,7 @@ Uso:
     python3 harden.py --apply      # Aplicar mejoras automáticamente
 """
 
-import os, sys, argparse, stat
+import os, argparse
 from pathlib import Path
 
 GREEN = "\033[92m"; BLUE = "\033[94m"; YELLOW = "\033[93m"

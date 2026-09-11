@@ -9,6 +9,17 @@ from pathlib import Path
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
 CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 
+# Repo root (tests/ parent) — no hardcoded absolute user paths.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def find_server_binary():
+    """Server binary location coherent with the repo layout (Makefile output first)."""
+    for p in (PROJECT_ROOT / "worldc2-server", PROJECT_ROOT / "src" / "go" / "server"):
+        if p.exists():
+            return p
+    return PROJECT_ROOT / "worldc2-server"
+
 class TestRunner:
     def __init__(self):
         self.passed = 0
@@ -28,15 +39,21 @@ class TestRunner:
 
     def docker(self, cmd, timeout=30):
         return subprocess.run(f"sg docker -c \"docker {cmd}\"", shell=True,
-                            capture_output=True, text=True, timeout=timeout)
+                            cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=timeout)
 
     def start_server(self, keep_db=False):
         """Start C2 server in background"""
-        os.chdir("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master")
-        if not keep_db and os.path.exists("worldc2.db"):
-            os.remove("worldc2.db")
+        if not keep_db:
+            db = PROJECT_ROOT / "worldc2.db"
+            if db.exists():
+                db.unlink()
+        server_bin = find_server_binary()
+        if not server_bin.exists():
+            print(f"{RED}Server binary not found: {server_bin} (build with 'make build-server'){RESET}")
+            return False
         self.server_proc = subprocess.Popen(
-            ["./worldc2-server", "-config", "config.yaml", "-no-tls"],
+            [str(server_bin), "-config", "config.yaml", "-no-tls"],
+            cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         time.sleep(3)
@@ -44,7 +61,8 @@ class TestRunner:
         try:
             r = urllib.request.urlopen("http://127.0.0.1:9090/api/health", timeout=5)
             return r.status == 200
-        except:
+        except Exception as e:
+            print(f"{YELLOW}Health check after start failed: {e}{RESET}")
             return False
 
     def stop_server(self):
@@ -84,7 +102,6 @@ class TestRunner:
     def test_docker_build(self):
         """Test Docker image build"""
         print(f"\n{BOLD}[1] Docker Build Test{RESET}")
-        os.chdir("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master")
         r = self.docker("build -t worldc2-server -f Dockerfile . 2>&1 | tail -5", timeout=300)
         self.result("Docker image build", r.returncode == 0, r.stderr[-200:] if r.returncode else "")
 
@@ -96,11 +113,11 @@ class TestRunner:
         self.result("Docker network create", "ok" in r.stdout)
 
         # Check Dockerfile exists and is valid
-        dockerfile = Path("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master/Dockerfile")
+        dockerfile = PROJECT_ROOT / "Dockerfile"
         self.result("Dockerfile exists", dockerfile.exists())
 
         # Verify docker-compose.yml
-        compose = Path("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master/docker-compose.yml")
+        compose = PROJECT_ROOT / "docker-compose.yml"
         self.result("docker-compose.yml exists", compose.exists())
 
     def test_multi_transport(self):
@@ -224,9 +241,13 @@ class TestRunner:
         time.sleep(3)
 
         # Start fresh server keeping DB
-        os.chdir("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master")
+        server_bin = find_server_binary()
+        if not server_bin.exists():
+            self.result("Server restart", False, f"Server binary not found: {server_bin}")
+            return
         self.server_proc = subprocess.Popen(
-            ["./worldc2-server", "-config", "config.yaml", "-no-tls"],
+            [str(server_bin), "-config", "config.yaml", "-no-tls"],
+            cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         time.sleep(4)
@@ -251,22 +272,6 @@ class TestRunner:
         self.result("Old token valid after restart (persistent secret)", status == 200,
                    f"Got HTTP {status}")
         self.token = token2
-
-    def start_server(self, keep_db=False):
-        """Start C2 server in background"""
-        os.chdir("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master")
-        if not keep_db and os.path.exists("worldc2.db"):
-            os.remove("worldc2.db")
-        self.server_proc = subprocess.Popen(
-            ["./worldc2-server", "-config", "config.yaml", "-no-tls"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        time.sleep(3)
-        try:
-            r = urllib.request.urlopen("http://127.0.0.1:9090/api/health", timeout=5)
-            return r.status == 200
-        except:
-            return False
 
     def test_cors_security(self):
         """Test CORS restrictions"""

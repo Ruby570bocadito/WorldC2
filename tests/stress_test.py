@@ -137,8 +137,14 @@ class StressTest:
                     print(f"  {GREEN}[PASS]{RESET} {name} → HTTP {status}")
                 else:
                     print(f"  {RED}[FAIL]{RESET} {name} → HTTP {status} (unexpected)")
+                    with self.lock:
+                        self.results["failed"] += 1
+                        self.results["errors"].append(f"{name}: HTTP {status}")
             except Exception as e:
                 print(f"  {RED}[FAIL]{RESET} {name} → Exception: {e}")
+                with self.lock:
+                    self.results["failed"] += 1
+                    self.results["errors"].append(f"{name}: {e}")
 
     def run_all(self):
         print(f"\n{BOLD}{CYAN}WORLDC2 C2 Stress Test Suite{RESET}")
@@ -153,7 +159,14 @@ class StressTest:
         print(f"  Total Success: {self.results['success']}")
         print(f"  Total Failed: {self.results['failed']}")
         print(f"  Rate Limited: {self.results['rate_limited']}")
+        if self.results['errors']:
+            print(f"\n{RED}{BOLD}Failures:{RESET}")
+            for err in self.results['errors']:
+                print(f"  - {err}")
         print(f"{'='*50}")
+
+        # Real exit criterion: any unexpected (non-200/non-429) response is a failure.
+        return self.results["failed"] == 0
 
 
 def main():
@@ -165,7 +178,8 @@ def main():
     args = p.parse_args()
 
     test = StressTest(args.server, args.user, args.password, args.concurrent)
-    test.run_all()
+    success = test.run_all()
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

@@ -2,13 +2,25 @@
 # WORLDC2 C2 - Quick Integration Test
 # Starts server, runs tests, stops server
 
-cd /mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR" || exit 1
+
+# Server binary: Makefile output first, then the committed src/go/server
+SERVER_BIN="$PROJECT_DIR/worldc2-server"
+if [ ! -x "$SERVER_BIN" ]; then
+    SERVER_BIN="$PROJECT_DIR/src/go/server"
+fi
+if [ ! -x "$SERVER_BIN" ]; then
+    echo "Server binary not found (build with: make build-server)" >&2
+    exit 1
+fi
 
 # Clean DB
-rm -f worldc2.db
+rm -f "$PROJECT_DIR/worldc2.db"
 
 # Start server in background
-./worldc2-server --no-tls &
+"$SERVER_BIN" --no-tls &
 SERVER_PID=$!
 
 # Wait for server
@@ -21,7 +33,7 @@ for i in $(seq 1 15); do
 done
 
 # Run tests
-python3 tests/run_tests.py --server http://127.0.0.1:9090 --user admin --password admin
+python3 "$SCRIPT_DIR/run_tests.py" --server http://127.0.0.1:9090 --user admin --password admin
 TEST_EXIT=$?
 
 # Stop server

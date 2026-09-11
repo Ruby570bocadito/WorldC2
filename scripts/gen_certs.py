@@ -9,9 +9,8 @@ Uso:
     python3 gen_certs.py --days 365         # Validez personalizada
 """
 
-import os, sys, argparse
+import os, sys, shutil, subprocess, argparse
 from pathlib import Path
-from datetime import datetime, timedelta
 
 GREEN = "\033[92m"; BLUE = "\033[94m"; YELLOW = "\033[93m"
 RED = "\033[91m"; CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
@@ -31,37 +30,33 @@ def generate_certs(output_dir, domain, days, key_size):
     print(f"  Output:  {output_dir}\n")
 
     # Check for openssl
-    import shutil
     openssl = shutil.which("openssl")
     if not openssl:
         print(f"{RED}[✗]{RESET} openssl not found in PATH")
         sys.exit(1)
 
-    # Generate private key
+    # Generate private key (argument lists: no shell, no injection via --domain)
     print(f"{BLUE}[>]{RESET} Generating RSA-{key_size} private key...")
-    cmd = f"{openssl} genrsa -out {key_file} {key_size} 2>/dev/null"
-    os.system(cmd)
-
-    if not key_file.exists():
-        print(f"{RED}[✗]{RESET} Failed to generate private key")
+    r = subprocess.run(
+        [openssl, "genrsa", "-out", str(key_file), str(key_size)],
+        capture_output=True, text=True)
+    if r.returncode != 0 or not key_file.exists():
+        print(f"{RED}[✗]{RESET} Failed to generate private key: {(r.stderr or '').strip()}")
         sys.exit(1)
     print(f"{GREEN}[✓]{RESET} Private key: {key_file}")
 
     # Generate self-signed certificate
     print(f"{BLUE}[>]{RESET} Generating self-signed certificate...")
-    cmd = (
-        f"{openssl} req -new -x509 "
-        f"-key {key_file} "
-        f"-out {cert_file} "
-        f"-days {days} "
-        f"-subj '/CN={domain}/O=WORLDC2 C2/C=US' "
-        f"-addext 'subjectAltName=DNS:{domain},DNS:localhost,IP:127.0.0.1' "
-        f"2>/dev/null"
-    )
-    os.system(cmd)
-
-    if not cert_file.exists():
-        print(f"{RED}[✗]{RESET} Failed to generate certificate")
+    r = subprocess.run(
+        [openssl, "req", "-new", "-x509",
+         "-key", str(key_file),
+         "-out", str(cert_file),
+         "-days", str(days),
+         "-subj", f"/CN={domain}/O=WORLDC2 C2/C=US",
+         "-addext", f"subjectAltName=DNS:{domain},DNS:localhost,IP:127.0.0.1"],
+        capture_output=True, text=True)
+    if r.returncode != 0 or not cert_file.exists():
+        print(f"{RED}[✗]{RESET} Failed to generate certificate: {(r.stderr or '').strip()}")
         sys.exit(1)
     print(f"{GREEN}[✓]{RESET} Certificate: {cert_file}")
 
@@ -70,14 +65,16 @@ def generate_certs(output_dir, domain, days, key_size):
     os.chmod(cert_file, 0o644)
 
     # Show fingerprint
-    cmd = f"{openssl} x509 -in {cert_file} -noout -fingerprint -sha256 2>/dev/null"
-    result = os.popen(cmd).read().strip()
-    print(f"\n{CYAN}SHA256 Fingerprint:{RESET} {result}")
+    r = subprocess.run(
+        [openssl, "x509", "-in", str(cert_file), "-noout", "-fingerprint", "-sha256"],
+        capture_output=True, text=True)
+    print(f"\n{CYAN}SHA256 Fingerprint:{RESET} {r.stdout.strip()}")
 
     # Show expiry
-    cmd = f"{openssl} x509 -in {cert_file} -noout -enddate 2>/dev/null"
-    expiry = os.popen(cmd).read().strip()
-    print(f"{CYAN}Expires:{RESET} {expiry}")
+    r = subprocess.run(
+        [openssl, "x509", "-in", str(cert_file), "-noout", "-enddate"],
+        capture_output=True, text=True)
+    print(f"{CYAN}Expires:{RESET} {r.stdout.strip()}")
 
     # Generate config snippet
     config_snippet = f"""

@@ -5,20 +5,19 @@ Detecta IP local, configura y arranca el servidor C2 automáticamente.
 
 Uso:
     python3 deploy.py              # Despliegue completo
-    python3 deploy.py --no-web     # Sin servir dashboard
     python3 deploy.py --port 443   # Puerto personalizado
 """
 
 import os
 import sys
-import json
 import socket
 import shutil
-import signal
 import subprocess
 import platform
 import argparse
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # === Colores para terminal ===
 GREEN  = "\033[92m"
@@ -45,10 +44,11 @@ def get_local_ip():
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except:
+    except OSError:
         try:
             return socket.gethostbyname(socket.gethostname())
-        except:
+        except OSError as e:
+            print(f"{YELLOW}[!] Hostname resolution failed ({e}); using 127.0.0.1{RESET}")
             return "127.0.0.1"
 
 def get_public_ip():
@@ -56,13 +56,14 @@ def get_public_ip():
     try:
         import urllib.request
         return urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode().strip()
-    except:
+    except Exception as e:
+        print(f"{YELLOW}[!] Public IP lookup failed: {e}{RESET}")
         return None
 
 def build_server():
     """Compila el servidor Go."""
-    server_dir = Path(__file__).parent.parent / "src" / "go"
-    output = Path(__file__).parent.parent / "worldc2-server"
+    server_dir = PROJECT_ROOT / "src" / "go"
+    output = PROJECT_ROOT / "worldc2-server"
     
     if output.exists():
         print(f"{GREEN}[✓]{RESET} Server binary already exists: {output}")
@@ -79,19 +80,17 @@ def build_server():
     
     if not go_bin:
         print(f"{YELLOW}[!]{RESET} Go not found — using pre-compiled binary if available")
-        for p in [Path("worldc2-server"), Path("bin/ctrlworldc2-server"), Path("bin/worldc2-server")]:
+        for p in [PROJECT_ROOT / "worldc2-server", PROJECT_ROOT / "src" / "go" / "server"]:
             if p.exists():
                 return p
         return None
     
-    os.chdir(server_dir)
     env = {**os.environ, "CGO_ENABLED": "0", "GOOS": platform.system().lower()}
     
     result = subprocess.run(
         [go_bin, "build", "-ldflags=-s -w", "-o", str(output), "./cmd/server/main.go"],
-        env=env, capture_output=True, text=True
+        cwd=str(server_dir), env=env, capture_output=True, text=True
     )
-    os.chdir(Path(__file__).parent.parent)
     
     if result.returncode == 0:
         print(f"{GREEN}[✓]{RESET} Server compiled: {output}")
@@ -140,8 +139,10 @@ operators:
     password: "admin"
     role: "admin"
 """
-    with open("config.yaml", "w") as f:
+    config_path = PROJECT_ROOT / "config.yaml"
+    with open(config_path, "w") as f:
         f.write(config)
+    return config_path
 
 def generate_payload_info(local_ip, port, api_port):
     """Muestra info para generar payloads."""
@@ -174,7 +175,6 @@ def main():
     parser.add_argument("--api-port", type=int, default=9090, help="API + Dashboard port")
     parser.add_argument("--http-port", type=int, default=8445, help="HTTP long-poll port")
     parser.add_argument("--ws-port", type=int, default=8446, help="WebSocket port")
-    parser.add_argument("--no-web", action="store_true", help="Don't serve web dashboard")
     parser.add_argument("--no-build", action="store_true", help="Skip Go build")
     args = parser.parse_args()
     
@@ -190,15 +190,15 @@ def main():
     print()
     
     # Generate config
-    generate_config(local_ip, args.port, args.api_port, args.http_port, args.ws_port)
-    print(f"{GREEN}[✓]{RESET} Config generated: config.yaml")
+    config_path = generate_config(local_ip, args.port, args.api_port, args.http_port, args.ws_port)
+    print(f"{GREEN}[✓]{RESET} Config generated: {config_path}")
     
     # Build server
     server_bin = None
     if not args.no_build:
         server_bin = build_server()
     else:
-        for p in [Path("worldc2-server"), Path("bin/ctrlworldc2-server"), Path("bin/worldc2-server")]:
+        for p in [PROJECT_ROOT / "worldc2-server", PROJECT_ROOT / "src" / "go" / "server"]:
             if p.exists():
                 server_bin = p
                 break
@@ -220,12 +220,12 @@ def main():
     
     # Build command — use absolute path
     server_bin_abs = str(Path(server_bin).resolve())
-    cmd = [server_bin_abs, "--config", str(Path(__file__).parent.parent / "config.yaml"), "--no-tls"]
+    cmd = [server_bin_abs, "--config", str(PROJECT_ROOT / "config.yaml"), "--no-tls"]
     if args.api_port != 9090:
         cmd.extend(["--api-port", str(args.api_port)])
     
     try:
-        project_root = Path(__file__).parent.parent
+        project_root = Path(__file__).resolve().parent.parent
         process = subprocess.Popen(cmd, cwd=str(project_root))
         process.wait()
     except KeyboardInterrupt:

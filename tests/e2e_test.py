@@ -9,6 +9,15 @@ from pathlib import Path
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
 CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 
+# Repo root (tests/ parent) — no hardcoded absolute user paths.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def find_binary(name):
+    """Binary location coherent with the repo layout (Makefile output first)."""
+    p = PROJECT_ROOT / name
+    return p
+
 class E2ETestRunner:
     def __init__(self):
         self.passed = 0
@@ -28,25 +37,38 @@ class E2ETestRunner:
             print(f"  {RED}[FAIL]{RESET} {test}: {detail}")
 
     def start_server(self, tls=False):
-        os.chdir("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master")
-        if os.path.exists("worldc2.db"):
-            os.remove("worldc2.db")
-        args = ["./worldc2-server", "-config", "config.yaml"]
+        db = PROJECT_ROOT / "worldc2.db"
+        if db.exists():
+            db.unlink()
+        server_bin = find_binary("worldc2-server")
+        if not server_bin.exists():
+            # Fall back to the binary committed at src/go/server
+            server_bin = PROJECT_ROOT / "src" / "go" / "server"
+        if not server_bin.exists():
+            print(f"{RED}Server binary not found (build with 'make build-server'){RESET}")
+            return False
+        args = [str(server_bin), "-config", "config.yaml"]
         if not tls:
             args.append("-no-tls")
-        self.server_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.server_proc = subprocess.Popen(args, cwd=str(PROJECT_ROOT),
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         time.sleep(4)
         try:
             proto = "https" if tls else "http"
             r = urllib.request.urlopen(f"{proto}://127.0.0.1:9090/api/health", timeout=5)
             return r.status == 200
-        except:
+        except Exception as e:
+            print(f"{YELLOW}Health check after start failed: {e}{RESET}")
             return False
 
     def start_agent(self):
-        os.chdir("/mnt/c/Users/Rby/Desktop/WORLDC2-master/WORLDC2-master")
+        agent_bin = find_binary("worldc2-agent")
+        if not agent_bin.exists():
+            print(f"{RED}Agent binary not found: {agent_bin} (build with 'make build-agent'){RESET}")
+            return
         self.agent_proc = subprocess.Popen(
-            ["./worldc2-agent"],
+            [str(agent_bin)],
+            cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         time.sleep(5)
@@ -54,13 +76,17 @@ class E2ETestRunner:
     def stop_all(self):
         if self.agent_proc:
             self.agent_proc.terminate()
-            try: self.agent_proc.wait(timeout=3)
-            except: self.agent_proc.kill()
+            try:
+                self.agent_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.agent_proc.kill()
             self.agent_proc = None
         if self.server_proc:
             self.server_proc.terminate()
-            try: self.server_proc.wait(timeout=5)
-            except: self.server_proc.kill()
+            try:
+                self.server_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.server_proc.kill()
             self.server_proc = None
         time.sleep(2)
 
@@ -280,8 +306,13 @@ class E2ETestRunner:
         """Test: Multiple agents can connect simultaneously"""
         print(f"\n{BOLD}[9] E2E: Multiple Agents{RESET}")
         # Start a second agent
+        agent_bin = find_binary("worldc2-agent")
+        if not agent_bin.exists():
+            self.result("Multiple agents connected", False, f"Agent binary not found: {agent_bin}")
+            return
         agent2 = subprocess.Popen(
-            ["./worldc2-agent"],
+            [str(agent_bin)],
+            cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env={**os.environ, "HOME": os.path.expanduser("~")}
         )
@@ -300,8 +331,10 @@ class E2ETestRunner:
             self.result("Multiple agents connected", False, str(sessions))
 
         agent2.terminate()
-        try: agent2.wait(timeout=3)
-        except: agent2.kill()
+        try:
+            agent2.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            agent2.kill()
 
     def test_e2e_kill_agent(self):
         """Test: Kill agent session"""

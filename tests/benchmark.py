@@ -17,11 +17,25 @@ CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 class Benchmark:
     def __init__(self, server, user, password, requests=1000, concurrent=10):
         self.server = server.rstrip("/")
-        import base64
-        creds = base64.b64encode(f"{user}:{password}".encode()).decode()
-        self.auth_header = f"Basic {creds}"
+        # The API is Bearer-only: authenticate via POST /api/login (no Basic auth).
+        self.auth_header = self._login(user, password)
         self.requests = requests
         self.concurrent = concurrent
+
+    def _login(self, user, password):
+        import urllib.request
+        url = f"{self.server}/api/login"
+        data = json.dumps({"username": user, "password": password}).encode()
+        req = urllib.request.Request(url, data=data,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                token = json.loads(r.read()).get("token")
+                if token:
+                    return f"Bearer {token}"
+        except Exception as e:
+            print(f"{RED}Warning: could not authenticate: {e}{RESET}")
+        return None
 
     def _request(self, method, path, data=None):
         import urllib.request

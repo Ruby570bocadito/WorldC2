@@ -7,8 +7,7 @@ Uso:
     python3 monitor.py [--server http://127.0.0.1:9090] [--interval 5]
 """
 
-import sys, os, json, time, argparse, curses
-from pathlib import Path
+import os, json, time, argparse
 
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
 CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
@@ -16,23 +15,68 @@ CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
 class Monitor:
     def __init__(self, server, user, password, interval=5):
         self.server = server.rstrip("/")
-        import base64
-        creds = base64.b64encode(f"{user}:{password}".encode()).decode()
-        self.auth_header = f"Basic {creds}"
+        self.user = user
+        self.password = password
+        self.token = None
         self.interval = interval
         self.history = []
         self.max_history = 60
 
+    def _login(self):
+        """POST /api/login (JSON) and store the Bearer token.
+
+        The API is Bearer-only: Basic auth is not accepted on protected routes.
+        Mirrors console.py.
+        """
+        import urllib.request
+        url = f"{self.server}/api/login"
+        data = json.dumps({"username": self.user, "password": self.password}).encode()
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                resp = json.loads(r.read())
+                self.token = resp.get("token")
+                if not self.token:
+                    print(f"\n{RED}[AUTH ERROR]{RESET} Login response had no token")
+                    return False
+                return True
+        except Exception as e:
+            print(f"\n{RED}[AUTH ERROR]{RESET} Login failed on {url}: {e}")
+            self.token = None
+            return False
+
     def _api(self, path):
         import urllib.request
         import urllib.error
+        if not self.token and not self._login():
+            return None
         url = f"{self.server}{path}"
-        headers = {"Authorization": self.auth_header}
-        req = urllib.request.Request(url, headers=headers)
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token}"})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return json.loads(r.read())
-        except:
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode(errors="replace")[:200]
+            except Exception:
+                pass
+            if e.code == 401:
+                # Token expired/invalid — re-authenticate once and retry
+                if self._login():
+                    req = urllib.request.Request(
+                        url, headers={"Authorization": f"Bearer {self.token}"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=5) as r:
+                            return json.loads(r.read())
+                    except Exception as e2:
+                        print(f"\n{RED}[API ERROR]{RESET} {path}: {e2}")
+                        return None
+            print(f"\n{RED}[API ERROR]{RESET} {path}: HTTP {e.code} {body}".rstrip())
+            return None
+        except Exception as e:
+            print(f"\n{RED}[API ERROR]{RESET} {path}: {e}")
             return None
 
     def run(self):

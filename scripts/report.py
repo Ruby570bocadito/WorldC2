@@ -7,7 +7,6 @@ Uso:
     python3 report.py
 """
 
-import os, sys
 from pathlib import Path
 from datetime import datetime
 
@@ -23,8 +22,8 @@ def count_lines(directory, extensions):
             if '/node_modules/' not in str(f) and '/.git/' not in str(f):
                 try:
                     count += len(f.read_text().splitlines())
-                except:
-                    pass
+                except (OSError, UnicodeDecodeError) as e:
+                    print(f"{YELLOW}[!]{RESET} Could not read {f}: {e}")
         by_ext[ext] = count
         total += count
     return total, by_ext
@@ -74,13 +73,16 @@ def main():
         print(f"  TLS enabled:     {'Yes' if tls_enabled else 'No'}")
         print(f"  Bcrypt passwords: {'Yes' if bcrypt else 'No'}")
 
-    # Check rate limiting
+    # Check rate limiting (server.go) and input validation (handlers/validate.go)
     server_go = root / "src/go/internal/c2/server.go"
     if server_go.exists():
         content = server_go.read_text()
         print(f"  Rate limiting:   {'Yes' if 'RateLimiter' in content else 'No'}")
         print(f"  CORS restricted: {'Yes' if '\"*\"' not in content else 'No'}")
-        print(f"  Input validation:{'Yes' if 'ValidateCommand' in content else 'No'}")
+    validate_go = root / "src/go/internal/handlers/validate.go"
+    if validate_go.exists():
+        content = validate_go.read_text()
+        print(f"  Input validation:{'Yes' if 'ValidateCommandRequest' in content else 'No'}")
 
     # Test coverage
     print(f"\n{BOLD}Test Coverage:{RESET}")

