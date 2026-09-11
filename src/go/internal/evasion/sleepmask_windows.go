@@ -13,7 +13,7 @@ func (sm *SleepMask) lockMemoryRegions() {
 		}
 		var oldProtect uint32
 		procVirtualProtect.Call(
-			r.addr,
+			uintptr(r.ptr),
 			uintptr(r.size),
 			PAGE_EXECUTE_READ,
 			uintptr(unsafe.Pointer(&oldProtect)),
@@ -30,7 +30,7 @@ func (sm *SleepMask) unlockMemoryRegions() {
 		}
 		var oldProtect uint32
 		procVirtualProtect.Call(
-			r.addr,
+			uintptr(r.ptr),
 			uintptr(r.size),
 			PAGE_EXECUTE_READWRITE,
 			uintptr(unsafe.Pointer(&oldProtect)),
