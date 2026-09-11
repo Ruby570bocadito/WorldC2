@@ -193,7 +193,7 @@ func checkScreenResolution() bool {
 	user32 := syscall.NewLazyDLL("user32.dll")
 	getSystemMetrics := user32.NewProc("GetSystemMetrics")
 
-	width, _, _ := getSystemMetrics.Call(0) // SM_CXSCREEN
+	width, _, _ := getSystemMetrics.Call(0)  // SM_CXSCREEN
 	height, _, _ := getSystemMetrics.Call(1) // SM_CYSCREEN
 
 	// Require at least 800x600

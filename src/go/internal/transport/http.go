@@ -14,13 +14,13 @@ import (
 
 // HTTPListener implements a long-poll HTTP/S listener for C2.
 type HTTPListener struct {
-	server     *http.Server
-	addr       string
-	tlsConfig  *tls.Config
-	messages   map[string]chan []byte
-	mu         sync.RWMutex
-	acceptCh   chan *httpConn
-	quit       chan struct{}
+	server    *http.Server
+	addr      string
+	tlsConfig *tls.Config
+	messages  map[string]chan []byte
+	mu        sync.RWMutex
+	acceptCh  chan *httpConn
+	quit      chan struct{}
 }
 
 // httpConn wraps an HTTP long-poll session as a net.Conn.
@@ -291,10 +291,10 @@ func (a addr) String() string  { return a.s }
 
 // HTTPAgent connects to C2 via HTTP long-polling.
 type HTTPAgent struct {
-	serverURL  string
-	sessionID  string
-	userAgent  string
-	client     *http.Client
+	serverURL    string
+	sessionID    string
+	userAgent    string
+	client       *http.Client
 	pollInterval time.Duration
 }
 

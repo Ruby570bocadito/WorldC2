@@ -78,9 +78,9 @@ func TestGenerateAgentCert(t *testing.T) {
 	}
 
 	opts := x509.VerifyOptions{
-		Roots:         x509.NewCertPool(),
-		CurrentTime:   parsedCert.NotBefore.Add(time.Hour),
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Roots:       x509.NewCertPool(),
+		CurrentTime: parsedCert.NotBefore.Add(time.Hour),
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	opts.Roots.AddCert(caCert)
 	if _, err := parsedCert.Verify(opts); err != nil {

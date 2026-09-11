@@ -81,7 +81,7 @@ func PatchEtwEventWriteFull() *ETWBypassResult {
 
 	return &ETWBypassResult{
 		Success: true,
-		Method: PatchEtwEventWriteFullMethod,
+		Method:  PatchEtwEventWriteFullMethod,
 		Note:    "EtwEventWriteFull patched",
 	}
 }
@@ -106,7 +106,7 @@ func PatchEtwEventWriteEx() *ETWBypassResult {
 
 	return &ETWBypassResult{
 		Success: true,
-		Method: PatchEtwEventWriteExMethod,
+		Method:  PatchEtwEventWriteExMethod,
 		Note:    "EtwEventWriteEx patched",
 	}
 }
@@ -131,7 +131,7 @@ func PatchEtwEventWriteTransfer() *ETWBypassResult {
 
 	return &ETWBypassResult{
 		Success: true,
-		Method: PatchEtwEventWriteTransferMethod,
+		Method:  PatchEtwEventWriteTransferMethod,
 		Note:    "EtwEventWriteTransfer patched",
 	}
 }
@@ -156,7 +156,7 @@ func PatchEtwEventWriteString() *ETWBypassResult {
 
 	return &ETWBypassResult{
 		Success: true,
-		Method: PatchEtwEventWriteStringMethod,
+		Method:  PatchEtwEventWriteStringMethod,
 		Note:    "EtwEventWriteString patched",
 	}
 }

@@ -7,11 +7,11 @@ import (
 
 // Profile defines a transport profile for an agent.
 type Profile struct {
-	Name       string   `json:"name"`       // e.g., "corporate", "direct"
-	Priority   int      `json:"priority"`   // Lower = tried first
-	Transports []string `json:"transports"` // e.g., ["wss", "https", "dns"]
-	ProxyURL   string   `json:"proxy_url"`  // Optional SOCKS5/HTTP proxy
-	UserAgent  string   `json:"user_agent"` // e.g., "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+	Name       string   `json:"name"`        // e.g., "corporate", "direct"
+	Priority   int      `json:"priority"`    // Lower = tried first
+	Transports []string `json:"transports"`  // e.g., ["wss", "https", "dns"]
+	ProxyURL   string   `json:"proxy_url"`   // Optional SOCKS5/HTTP proxy
+	UserAgent  string   `json:"user_agent"`  // e.g., "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 	HostHeader string   `json:"host_header"` // Domain fronting header
 	MaxRetries int      `json:"max_retries"`
 }

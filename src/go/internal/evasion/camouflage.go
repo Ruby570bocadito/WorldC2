@@ -11,13 +11,13 @@ import (
 
 // CamouflageConfig holds TLS traffic obfuscation settings.
 type CamouflageConfig struct {
-	Enabled          bool
-	DomainFront      string // e.g., "cdn.cloudflare.com"
-	SNI              string // Server Name Indication spoof
-	UserAgent        string
-	JitterPercent    float64 // 0.3 = ±30% timing jitter
-	HeartbeatMin     time.Duration
-	HeartbeatMax     time.Duration
+	Enabled       bool
+	DomainFront   string // e.g., "cdn.cloudflare.com"
+	SNI           string // Server Name Indication spoof
+	UserAgent     string
+	JitterPercent float64 // 0.3 = ±30% timing jitter
+	HeartbeatMin  time.Duration
+	HeartbeatMax  time.Duration
 }
 
 // DefaultCamouflage returns recommended evasion settings.

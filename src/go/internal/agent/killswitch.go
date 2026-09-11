@@ -12,9 +12,9 @@ import (
 
 // KillSwitch provides emergency self-destruct capabilities.
 type KillSwitch struct {
-	enabled     bool
-	triggerFile string
-	maxAge      time.Duration
+	enabled       bool
+	triggerFile   string
+	maxAge        time.Duration
 	checkInterval time.Duration
 }
 
@@ -120,9 +120,9 @@ func (ks *KillSwitch) checkIPBlacklist() bool {
 	// Check if running on known analysis IPs
 	// These are commonly used in sandbox environments
 	blacklist := []string{
-		"10.0.2.",    // VirtualBox NAT
+		"10.0.2.",     // VirtualBox NAT
 		"192.168.56.", // VirtualBox host-only
-		"172.16.",    // Common lab network
+		"172.16.",     // Common lab network
 	}
 
 	// Get local IPs

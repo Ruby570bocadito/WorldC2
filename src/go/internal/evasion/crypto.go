@@ -103,9 +103,9 @@ func (ah *APIHashing) resolveByHash(dll *syscall.LazyDLL, targetHash uint32) (ui
 
 	// Parse PE header
 	dosHeader := (*struct {
-		Magic    uint16
-		_        [28]byte
-		LfaNew   int32
+		Magic  uint16
+		_      [28]byte
+		LfaNew int32
 	})(unsafe.Pointer(base))
 
 	if dosHeader.Magic != 0x5A4D { // MZ
@@ -113,7 +113,7 @@ func (ah *APIHashing) resolveByHash(dll *syscall.LazyDLL, targetHash uint32) (ui
 	}
 
 	ntHeader := (*struct {
-		Signature uint32
+		Signature  uint32
 		FileHeader struct {
 			Machine              uint16
 			NumberOfSections     uint16
@@ -124,9 +124,9 @@ func (ah *APIHashing) resolveByHash(dll *syscall.LazyDLL, targetHash uint32) (ui
 			Characteristics      uint16
 		}
 		OptionalHeader struct {
-			Magic                  uint16
-			_                      [94]byte
-			DataDirectory          [16]struct {
+			Magic         uint16
+			_             [94]byte
+			DataDirectory [16]struct {
 				VirtualAddress uint32
 				Size           uint32
 			}

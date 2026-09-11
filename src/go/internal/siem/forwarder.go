@@ -13,19 +13,19 @@ import (
 
 // WebhookConfig holds webhook notification settings.
 type WebhookConfig struct {
-	URL       string
-	Headers   map[string]string
-	Timeout   time.Duration
-	Events    []string // Event types to forward
+	URL     string
+	Headers map[string]string
+	Timeout time.Duration
+	Events  []string // Event types to forward
 }
 
 // SIEMForwarder forwards events to external SIEM systems.
 type SIEMForwarder struct {
-	mu        sync.Mutex
-	webhooks  []WebhookConfig
-	queue     chan SIEMEvent
-	quit      chan struct{}
-	wg        sync.WaitGroup
+	mu       sync.Mutex
+	webhooks []WebhookConfig
+	queue    chan SIEMEvent
+	quit     chan struct{}
+	wg       sync.WaitGroup
 }
 
 // SIEMEvent represents an event to forward.

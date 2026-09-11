@@ -163,11 +163,11 @@ func SpoofProcessName(legitName string) error {
 	ntQueryInformationProcess := ntdll.NewProc("NtQueryInformationProcess")
 
 	type PROCESS_BASIC_INFORMATION struct {
-		Reserved1    uintptr
-		PebBaseAddress uintptr
-		Reserved2    [2]uintptr
+		Reserved1       uintptr
+		PebBaseAddress  uintptr
+		Reserved2       [2]uintptr
 		UniqueProcessId uintptr
-		Reserved3    uintptr
+		Reserved3       uintptr
 	}
 
 	var pbi PROCESS_BASIC_INFORMATION
@@ -185,8 +185,8 @@ func SpoofProcessName(legitName string) error {
 
 	// Read PEB
 	var peb struct {
-		_                  [16]byte
-		ProcessParameters  uintptr
+		_                 [16]byte
+		ProcessParameters uintptr
 	}
 
 	var bytesRead uintptr
@@ -201,13 +201,13 @@ func SpoofProcessName(legitName string) error {
 
 	// Read RTL_USER_PROCESS_PARAMETERS
 	var upp struct {
-		_         [64]byte
+		_             [64]byte
 		ImagePathName struct {
 			Length        uint16
 			MaximumLength uint16
 			Buffer        uintptr
 		}
-		_         [8]byte
+		_           [8]byte
 		CommandLine struct {
 			Length        uint16
 			MaximumLength uint16

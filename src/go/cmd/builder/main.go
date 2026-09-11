@@ -52,14 +52,14 @@ var targets = map[string]PayloadConfig{
 }
 
 type PayloadConfig struct {
-	Name       string
-	Source     string
-	GOOS       string
-	GOARCH     string
-	CGO        bool
-	Obfuscate  bool
-	Compiler   string
-	NoCompile  bool
+	Name      string
+	Source    string
+	GOOS      string
+	GOARCH    string
+	CGO       bool
+	Obfuscate bool
+	Compiler  string
+	NoCompile bool
 }
 
 func main() {

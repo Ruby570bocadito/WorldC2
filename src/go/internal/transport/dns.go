@@ -227,12 +227,12 @@ func (c *dnsConn) Write(b []byte) (int, error) {
 	}
 }
 
-func (c *dnsConn) Close() error                         { return nil }
-func (c *dnsConn) LocalAddr() net.Addr                  { return &net.UDPAddr{IP: net.IPv4zero, Port: 53} }
-func (c *dnsConn) RemoteAddr() net.Addr                 { return &net.UDPAddr{IP: net.IPv4zero, Port: 53} }
-func (c *dnsConn) SetDeadline(t time.Time) error        { return nil }
-func (c *dnsConn) SetReadDeadline(t time.Time) error    { return nil }
-func (c *dnsConn) SetWriteDeadline(t time.Time) error   { return nil }
+func (c *dnsConn) Close() error                       { return nil }
+func (c *dnsConn) LocalAddr() net.Addr                { return &net.UDPAddr{IP: net.IPv4zero, Port: 53} }
+func (c *dnsConn) RemoteAddr() net.Addr               { return &net.UDPAddr{IP: net.IPv4zero, Port: 53} }
+func (c *dnsConn) SetDeadline(t time.Time) error      { return nil }
+func (c *dnsConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *dnsConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // --- DNS encoding helpers ---
 

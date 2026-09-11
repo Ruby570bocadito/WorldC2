@@ -10,12 +10,12 @@ import (
 
 // Config holds the entire C2 server configuration.
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	API       APIConfig       `yaml:"api"`
-	Transport TransportConfig `yaml:"transport"`
-	Database  DatabaseConfig  `yaml:"database"`
-	TLS       TLSConfig       `yaml:"tls"`
-	Logging   LoggingConfig   `yaml:"logging"`
+	Server    ServerConfig     `yaml:"server"`
+	API       APIConfig        `yaml:"api"`
+	Transport TransportConfig  `yaml:"transport"`
+	Database  DatabaseConfig   `yaml:"database"`
+	TLS       TLSConfig        `yaml:"tls"`
+	Logging   LoggingConfig    `yaml:"logging"`
 	Operators []OperatorConfig `yaml:"operators"`
 }
 
@@ -29,11 +29,11 @@ type TransportConfig struct {
 
 // ServerConfig holds C2 listener configuration.
 type ServerConfig struct {
-	Host               string        `yaml:"host"`
-	Port               uint16        `yaml:"port"`
-	MaxSessions        uint32        `yaml:"max_sessions"`
-	HeartbeatInterval  time.Duration `yaml:"heartbeat_interval"`
-	SessionTimeout     time.Duration `yaml:"session_timeout"`
+	Host                string        `yaml:"host"`
+	Port                uint16        `yaml:"port"`
+	MaxSessions         uint32        `yaml:"max_sessions"`
+	HeartbeatInterval   time.Duration `yaml:"heartbeat_interval"`
+	SessionTimeout      time.Duration `yaml:"session_timeout"`
 	ReconnectMaxBackoff time.Duration `yaml:"reconnect_max_backoff"`
 }
 
@@ -96,8 +96,8 @@ func DefaultConfig() *Config {
 			DSN:    "ctrlworldc2.db",
 		},
 		TLS: TLSConfig{
-			Enabled:  true,
-			AutoCert: true,
+			Enabled:    true,
+			AutoCert:   true,
 			MinVersion: "1.3",
 		},
 		Logging: LoggingConfig{

