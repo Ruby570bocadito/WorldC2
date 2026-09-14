@@ -157,7 +157,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET | `/api/health` | No | Server health |
 | GET | `/api/sessions` | Yes | List sessions (includes `AgentVersion`, `Transport`, `Privilege`, `Fingerprint` observability fields) |
 | GET | `/api/sessions/:id` | Yes | Session detail |
-| DELETE | `/api/sessions/:id` | Yes | Kill agent |
+| DELETE | `/api/sessions/:id` | Yes | Kill agent; add `?purge=true` to hard-delete the record together with its tasks and persisted loot (`sessions:kill`) |
 | POST | `/api/cmd` | Yes | Execute command |
 | POST | `/api/broadcast` | Yes | Broadcast command |
 | GET | `/api/vault` | Yes | List credentials |
@@ -174,6 +174,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | POST | `/api/refresh` | No | Exchange refresh token for a new access token |
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
 | GET | `/api/files/download/:id` | Yes | Download exfiltrated file |
+| DELETE | `/api/files/:id` | Yes | Purge a single loot artifact — blob on disk, current listing and persisted record (`files:delete`, admin only) |
 | GET/POST | `/api/notes` | Yes | Session notes (`collab:write`) |
 | POST | `/api/lock` | Yes | Lock/unlock session (`collab:write`) |
 | GET/POST | `/api/profiles` | Yes | Agent config profiles (`collab:write`) |

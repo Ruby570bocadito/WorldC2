@@ -38,7 +38,7 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 👥 RBAC | ✅ Working | `admin` / `operator` / `viewer` / `auditor` roles, per-endpoint permissions |
 | 📜 Audit log | ✅ Working | Actions stored in SQLite, SIEM forwarding hook |
 | 🔌 Modular task system | ✅ Working | Protobuf envelopes, dynamic module push; manifests HMAC-signed on registration and re-verified before every push (tampered manifests rejected) |
-| 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection; listing persisted in SQLite (`file_records`) and re-hydrated on restart, downloads keep working across restarts |
+| 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection; listing persisted in SQLite (`file_records`) and re-hydrated on restart, downloads keep working across restarts; individual artifacts can be purged from the console (`DELETE /api/files/:id`, admin) |
 | 🌐 SOCKS5 / port-forward tunnels | ✅ Working | TCP relaying through agents |
 | 🗄️ SQLite storage | ✅ Working | Transactional migrations; optional AES-256-GCM at-rest encryption for secrets (`WORLDC2_MASTER_KEY`) with PBKDF2-stretched key + per-DB salt (legacy ciphertext still readable) |
 | 🐳 Docker packaging | ✅ Working | Multi-stage build, non-root runtime user, healthcheck |

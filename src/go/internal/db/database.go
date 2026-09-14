@@ -296,7 +296,11 @@ func (d *DB) ListAllSessions() ([]SessionRecord, error) {
 	return scanSessions(rows)
 }
 
-// DeleteSession removes a session and its tasks.
+// DeleteSession removes a session and its tasks and loot records. The
+// file_records cleanup is mandatory: the table carries a foreign key to
+// sessions(id) and the database runs with PRAGMA foreign_keys=ON, so a
+// session with persisted loot would otherwise fail the whole delete with
+// FOREIGN KEY constraint failed.
 func (d *DB) DeleteSession(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -308,6 +312,9 @@ func (d *DB) DeleteSession(id string) error {
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(`DELETE FROM tasks WHERE session_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM file_records WHERE session_id=?`, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM sessions WHERE id=?`, id); err != nil {
@@ -961,4 +968,21 @@ func (d *DB) ListFileRecords() ([]FileRecord, error) {
 		out = append(out, fr)
 	}
 	return out, rows.Err()
+}
+
+// DeleteFileRecord removes a persisted loot entry by id. It returns
+// sql.ErrNoRows when the id is unknown so callers can distinguish
+// "already gone" from a real failure.
+func (d *DB) DeleteFileRecord(id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`DELETE FROM file_records WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }

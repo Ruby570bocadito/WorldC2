@@ -19,7 +19,7 @@
           v-model="query"
           class="input"
           type="search"
-          placeholder="Filter by hostname, user, IP or agent id…"
+          placeholder="Filter by hostname, user, IP, transport or agent id…"
           aria-label="Filter sessions"
         />
       </div>
@@ -39,10 +39,11 @@
             <th>Hostname</th>
             <th>User</th>
             <th>Platform</th>
+            <th>Transport</th>
             <th>IP</th>
             <th>State</th>
             <th>Last seen</th>
-            <th style="width: 96px">Actions</th>
+            <th style="width: 122px">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -62,6 +63,10 @@
               <span v-if="s.IsAdmin" class="tag-admin">ADMIN</span>
             </td>
             <td class="num">{{ (s.OS || '?') + ' / ' + (s.Arch || '?') }}</td>
+            <td class="num">
+              <span v-if="s.Transport || s.AgentVersion" class="transport mono">{{ s.Transport || '?' }}<span v-if="s.AgentVersion" class="faint"> · v{{ s.AgentVersion }}</span></span>
+              <span v-else class="faint">—</span>
+            </td>
             <td class="num">{{ ipOf(s) }}</td>
             <td>
               <span class="status-pill" :class="s.State === 'active' ? 'is-active' : 'is-down'">
@@ -88,6 +93,15 @@
                 @click="kill(s)"
               >
                 <IconClose :size="15" />
+              </button>
+              <button
+                class="icon-btn danger"
+                type="button"
+                title="Purge session (hard delete)"
+                aria-label="Purge session"
+                @click="purge(s)"
+              >
+                <IconTrash :size="15" />
               </button>
             </td>
           </tr>
@@ -126,6 +140,9 @@
           </div>
           <div class="detail-item"><label>User</label><span>{{ expandedSession.Username || '?' }}<span v-if="expandedSession.IsAdmin" class="tag-admin">ADMIN</span></span></div>
           <div class="detail-item"><label>Platform</label><span>{{ (expandedSession.OS || '?') + ' ' + (expandedSession.Arch || '') }}</span></div>
+          <div class="detail-item"><label>Transport / Agent version</label><span class="mono">{{ expandedSession.Transport || '—' }}<span v-if="expandedSession.AgentVersion"> · v{{ expandedSession.AgentVersion }}</span></span></div>
+          <div class="detail-item"><label>Privilege</label><span>{{ expandedSession.Privilege || '—' }}<span v-if="expandedSession.IsAdmin" class="tag-admin">ADMIN</span></span></div>
+          <div class="detail-item"><label>TLS fingerprint</label><span class="mono small">{{ expandedSession.Fingerprint || 'no mTLS pin' }}</span></div>
           <div class="detail-item"><label>IPs</label><span class="mono small">{{ expandedSession.PublicIP || '—' }} / {{ expandedSession.LocalIP || '—' }}</span></div>
           <div class="detail-item"><label>First seen</label><span>{{ fmtDate(expandedSession.FirstSeen) }}</span></div>
           <div class="detail-item"><label>Last seen</label><span>{{ fmtDate(expandedSession.LastSeen) }}</span></div>
@@ -187,11 +204,11 @@
 import { api } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtAgo, fmtDate, shortId, ipOf } from '../utils/format.js'
-import { IconSearch, IconNote, IconClose, IconSessions } from '../components/icons.js'
+import { IconSearch, IconNote, IconClose, IconSessions, IconTrash } from '../components/icons.js'
 
 export default {
   name: 'SessionsView',
-  components: { IconSearch, IconNote, IconClose, IconSessions },
+  components: { IconSearch, IconNote, IconClose, IconSessions, IconTrash },
   data() {
     return {
       sessions: [],
@@ -218,7 +235,7 @@ export default {
         if (this.stateFilter === 'active' && s.State !== 'active') return false
         if (this.stateFilter === 'inactive' && s.State === 'active') return false
         if (!q) return true
-        const hay = [s.Hostname, s.Username, s.PublicIP, s.LocalIP, s.AgentID, s.ID]
+        const hay = [s.Hostname, s.Username, s.PublicIP, s.LocalIP, s.AgentID, s.ID, s.Transport, s.AgentVersion]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
@@ -284,6 +301,24 @@ export default {
         if (!e.expired) notify.error('Kill failed: ' + e.message)
       }
     },
+    async purge(s) {
+      const ok = window.confirm(
+        'Purge session "' + (s.Hostname || s.ID) + '" permanently? The record, its tasks and its persisted loot are removed from the database.'
+      )
+      if (!ok) return
+      try {
+        // DELETE /api/sessions/:id?purge=true — hard delete (tasks + loot included)
+        await api.del('/api/sessions/' + encodeURIComponent(s.ID) + '?purge=true')
+        notify.ok('Session purged')
+        if (this.expanded === s.ID) {
+          this.expanded = null
+          this.tasks = []
+        }
+        this.fetchSessions()
+      } catch (e) {
+        if (!e.expired) notify.error('Purge failed: ' + e.message)
+      }
+    },
     async openNotes(s) {
       this.notesFor = s
       this.noteDraft = ''
@@ -328,6 +363,7 @@ export default {
 .filter-select { width: 160px; flex-shrink: 0; }
 
 .expand-cell { color: var(--faint); }
+.transport { font-size: 12px; color: var(--muted); }
 .chev {
   display: inline-block;
   transition: transform var(--speed);

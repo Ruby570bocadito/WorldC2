@@ -1,6 +1,7 @@
 package c2
 
 import (
+	"database/sql"
 	"fmt"
 	"io"
 	"log"
@@ -372,6 +373,71 @@ func (f *FileManager) Read(id string) ([]byte, *FileRecord, error) {
 		return nil, nil, fmt.Errorf("read file: %w", err)
 	}
 	return data, rec, nil
+}
+
+// Delete purges a single loot record everywhere it lives: the blob on disk,
+// the in-memory listing of the current run and the persisted file_records
+// row. The on-disk removal is guarded against escaping the loot directory
+// even if a persisted path was tampered with.
+//
+// If a DB layer is attached, the row delete is strict: a failure returns an
+// error so the operator never believes loot is gone while it would silently
+// reappear in the listing after the next restart.
+func (f *FileManager) Delete(id string) error {
+	rec, err := f.Get(id)
+	if err != nil {
+		return err
+	}
+
+	// Containment guard: resolve both sides and require the stored path to
+	// stay inside the loot base directory before touching the filesystem.
+	if rec.Path != "" {
+		absBase, err := filepath.Abs(f.baseDir)
+		if err != nil {
+			return fmt.Errorf("resolve loot dir: %w", err)
+		}
+		absPath, err := filepath.Abs(rec.Path)
+		if err != nil {
+			return fmt.Errorf("resolve loot path: %w", err)
+		}
+		rel, err := filepath.Rel(absBase, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			// Tampered or foreign path: drop the records, never the file.
+			log.Printf("[FILES] loot path %q escapes base dir %q — removing records only", absPath, absBase)
+			f.removeMemory(id)
+			f.removeDB(id)
+			return nil
+		}
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove loot file: %w", err)
+		}
+	}
+
+	f.removeMemory(id)
+	return f.removeDB(id)
+}
+
+// removeMemory drops the record from the current-run listing.
+func (f *FileManager) removeMemory(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, rec := range f.files {
+		if rec.ID == id {
+			f.files = append(f.files[:i], f.files[i+1:]...)
+			break
+		}
+	}
+}
+
+// removeDB drops the persisted row; a missing row counts as success.
+func (f *FileManager) removeDB(id string) error {
+	if f.db == nil {
+		return nil
+	}
+	if err := f.db.DeleteFileRecord(id); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("delete loot record: %w", err)
+	}
+	return nil
 }
 
 // List returns all file records: this run's in-memory entries plus the

@@ -173,6 +173,18 @@ func (r *Router) handleSessionDetail(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.Method == "DELETE" {
+		// ?purge=true hard-deletes the session record (tasks and
+		// persisted loot included); without it the agent is killed
+		// and the row stays as historical record with state "killed".
+		purge := req.URL.Query().Get("purge") == "true"
+		if purge {
+			if err := r.server.PurgeSession(id); err != nil {
+				http.Error(w, err.Error(), 404)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "purged"})
+			return
+		}
 		if err := r.server.KillAgent(id); err != nil {
 			http.Error(w, err.Error(), 404)
 			return
@@ -409,6 +421,27 @@ func (r *Router) handleFileDownload(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": rec.Filename}))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(data)
+}
+
+// handleFileDelete purges a single exfiltrated file (blob on disk, current
+// listing and persisted record). Ids are server-generated "file-<hex>"
+// strings; anything else is rejected before it reaches the manager.
+func (r *Router) handleFileDelete(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "DELETE" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	id := req.URL.Path[len("/api/files/"):]
+	if id == "" || strings.ContainsAny(id, "/\\") ||
+		strings.ContainsFunc(id, func(rr rune) bool { return rr < 0x20 || rr == 0x7f }) {
+		http.Error(w, "invalid file id", 400)
+		return
+	}
+	if err := r.server.Files().Delete(id); err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
 
 // handlePortFwd manages port forwarding.

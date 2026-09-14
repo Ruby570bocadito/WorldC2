@@ -88,6 +88,7 @@ func (r *Router) Setup() *http.ServeMux {
 	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.permByMethod("vault:read", "vault:create")(r.handleVault))))))
 	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.permByMethod("files:download", "files:upload")(r.handleFiles))))))
 	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(perm("files:download")(r.handleFileDownload))))))
+	mux.HandleFunc("/api/files/", cors(auth(audit(rate(perm("files:delete")(r.handleFileDelete))))))
 	mux.HandleFunc("/api/portfwd", cors(auth(audit(rate(perm("portfwd:start")(r.handlePortFwd))))))
 
 	// Operators (admin only)

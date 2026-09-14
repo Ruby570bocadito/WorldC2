@@ -732,6 +732,41 @@ func (s *Server) KillAgent(agentID string) error {
 	return nil
 }
 
+// PurgeSession kills the agent and removes the session record entirely —
+// session row, its tasks and its persisted loot (the DB layer cleans
+// file_records in the same transaction; enforced FK). Unlike KillAgent, the
+// historical row does not survive: this is the operator-facing hard delete.
+func (s *Server) PurgeSession(agentID string) error {
+	sess := s.resolveSession(agentID)
+	if sess == nil {
+		// Not live right now: still purge any persisted history by ID.
+		if err := s.db.DeleteSession(agentID); err != nil {
+			return fmt.Errorf("purge session: %w", err)
+		}
+		return nil
+	}
+	sess.SendEnvelope(proto.EnvelopeType_ENVELOPE_TYPE_DISCONNECT, nil)
+	sess.SetState(session.StateKilled)
+	sess.Close()
+	s.sessions.Delete(sess.ID)
+
+	if err := s.db.DeleteSession(sess.ID); err != nil {
+		return fmt.Errorf("purge session: %w", err)
+	}
+
+	s.siem.Forward(siem.SIEMEvent{
+		EventType: "agent_purged",
+		Source:    "c2_server",
+		Data: map[string]interface{}{
+			"session_id": sess.ID,
+			"agent_id":   sess.AgentID,
+			"hostname":   sess.Hostname,
+		},
+	})
+
+	return nil
+}
+
 // --- Connection handler ---
 
 func (s *Server) handleConnection(conn net.Conn, transportName string) {

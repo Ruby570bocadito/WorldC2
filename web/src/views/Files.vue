@@ -17,7 +17,7 @@
             <th>Module</th>
             <th>Size</th>
             <th>Captured</th>
-            <th style="width: 44px" />
+            <th style="width: 88px" />
           </tr>
         </thead>
         <tbody>
@@ -38,6 +38,17 @@
               >
                 <span v-if="downloading === f.id" class="spinner" />
                 <IconDownload v-else :size="15" />
+              </button>
+              <button
+                class="icon-btn danger"
+                type="button"
+                :title="'Purge ' + (f.filename || 'file')"
+                aria-label="Purge file"
+                :disabled="deleting === f.id"
+                @click="purge(f)"
+              >
+                <span v-if="deleting === f.id" class="spinner" />
+                <IconTrash v-else :size="15" />
               </button>
             </td>
           </tr>
@@ -61,16 +72,17 @@
 import { api, downloadFile } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtDate, fmtSize, shortId } from '../utils/format.js'
-import { IconDownload, IconFiles } from '../components/icons.js'
+import { IconDownload, IconFiles, IconTrash } from '../components/icons.js'
 
 export default {
   name: 'FilesView',
-  components: { IconDownload, IconFiles },
+  components: { IconDownload, IconFiles, IconTrash },
   data() {
     return {
       files: [],
       loading: true,
       downloading: null,
+      deleting: null,
       timer: null,
     }
   },
@@ -105,6 +117,23 @@ export default {
         if (!e.expired) notify.error('Download failed: ' + e.message)
       } finally {
         this.downloading = null
+      }
+    },
+    async purge(f) {
+      const ok = window.confirm(
+        'Purge "' + (f.filename || f.id) + '"? The artifact and its record are removed permanently.'
+      )
+      if (!ok) return
+      this.deleting = f.id
+      try {
+        // DELETE /api/files/:id (Bearer auth via api layer)
+        await api.del('/api/files/' + encodeURIComponent(f.id))
+        notify.ok('File purged')
+        this.fetchFiles()
+      } catch (e) {
+        if (!e.expired) notify.error('Purge failed: ' + e.message)
+      } finally {
+        this.deleting = null
       }
     },
   },

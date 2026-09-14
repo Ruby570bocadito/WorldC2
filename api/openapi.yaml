@@ -279,7 +279,7 @@ paths:
         '404':
           description: Session not found
     delete:
-      summary: Kill an agent
+      summary: Kill an agent (optionally hard-delete the record)
       tags: [Sessions]
       security:
         - BearerAuth: []
@@ -289,9 +289,18 @@ paths:
           required: true
           schema:
             type: string
+        - name: purge
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: >-
+            true = hard-delete the session record together with its tasks and
+            persisted loot rows in one transaction; default false = keep the
+            row as historical record with state "killed".
       responses:
         '200':
-          description: Agent killed
+          description: Agent killed (or purged when purge=true)
         '404':
           description: Agent not found
 
@@ -414,6 +423,39 @@ paths:
       responses:
         '200':
           description: File stored
+
+  /api/files/{id}:
+    delete:
+      summary: Purge a captured file (admin only)
+      description: >-
+        Removes a single exfiltrated artifact everywhere it lives: the blob in
+        the loot directory, the current listing and the persisted record.
+        Requires the files:delete permission (admin role).
+      tags: [Files]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File purged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+        '400':
+          description: Invalid file id
+        '403':
+          description: Insufficient permissions (files:delete required)
+        '404':
+          description: File not found
 
   /api/modules:
     get:

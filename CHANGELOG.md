@@ -1,5 +1,50 @@
 # WorldC2 — Changelog
 
+## v1.6.0 — Round 5: individual loot purge, session metadata in console, enforced FK cleanup (2026-09-15)
+
+Fifth maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Individual loot purge** — `DELETE /api/files/{id}` (permission `files:delete`,
+  admin-only) removes one exfiltrated artifact everywhere it lives: the blob in the loot
+  directory, the current-run listing and the persisted `file_records` row. New
+  `FileManager.Delete` (with a containment guard: a tampered stored path that escapes the
+  loot base dir gets its records dropped but the foreign file is never touched) and
+  `db.DeleteFileRecord` (distinguishes unknown ids via `sql.ErrNoRows`). The console Files
+  view gains a trash action with a confirmation dialog. Covered by tests for the full
+  purge path, the unknown-id contract and the foreign-path containment guard; the
+  `files:delete` permission existed in RBAC since round 1 and was previously unused.
+- **Session purge** — `DELETE /api/sessions/{id}?purge=true` hard-deletes the session
+  record together with its tasks and persisted loot in one transaction (`PurgeSession`;
+  the default kill keeps the row as historical record with state `killed`, unchanged).
+  The console Sessions view gains a second destructive action next to Kill with its own
+  confirmation text. This also gives `db.DeleteSession` its first production caller.
+- **Session observability fields surface in the console** — the Sessions view now shows
+  a Transport column (`transport · v<version>`) and the detail panel includes Transport /
+  Agent version, Privilege and the TLS fingerprint (rendered as "no mTLS pin" for plain
+  transports). The search filter also matches transport and agent version. The data has
+  traveled through `GET /api/sessions` since round 4; this round makes it visible.
+
+### Fixed (Bugs/Seguridad)
+
+- **`DeleteSession` now clears `file_records` in the same transaction** — the round-4
+  report claimed this fix, but it never landed in the code: with loot persistence live
+  (round 4) and `PRAGMA foreign_keys=ON`, deleting any session that owned persisted loot
+  failed the whole transaction with `FOREIGN KEY constraint failed` (reproduced
+  empirically with a regression test before the fix). Verified end-to-end in the round
+  smoke: `?purge=true` on a live session with persisted loot returns 200 and leaves zero
+  rows in `sessions`, `tasks` and `file_records`. A dedicated audit pass also verified
+  this time that each report claim matches the actual code (round-4 lesson).
+
+### Documentation
+
+- README loot row updated (individual purge + console action); DEVELOPER_GUIDE documents
+  `DELETE /api/files/:id` and the `?purge=true` variant of session kill; OpenAPI spec
+  adds the new file endpoint and the purge query parameter with their permission and
+  error codes; CHANGELOG entry v1.6.0 (this one).
+
 ## v1.5.0 — Round 4: session observability, persistent loot listing, legacy ciphertext convergence (2026-09-15)
 
 Fourth maintenance round executed by the four-agent flow (Director → Implementaciones →
