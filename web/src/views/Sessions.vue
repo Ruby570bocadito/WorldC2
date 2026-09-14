@@ -28,6 +28,10 @@
         <option value="active">Active</option>
         <option value="inactive">Inactive</option>
       </select>
+      <select v-model="transportFilter" class="select filter-select" aria-label="Transport filter">
+        <option value="all">All transports</option>
+        <option v-for="t in transports" :key="t" :value="t">{{ t }}</option>
+      </select>
     </div>
 
     <!-- table -->
@@ -215,6 +219,7 @@ export default {
       loading: true,
       query: '',
       stateFilter: 'all',
+      transportFilter: 'all',
       expanded: null,
       tasks: [],
       // notes
@@ -229,11 +234,15 @@ export default {
     activeCount() {
       return this.sessions.filter((s) => s.State === 'active').length
     },
+    transports() {
+      return [...new Set(this.sessions.map((s) => s.Transport).filter(Boolean))].sort()
+    },
     filtered() {
       const q = this.query.trim().toLowerCase()
       return this.sessions.filter((s) => {
         if (this.stateFilter === 'active' && s.State !== 'active') return false
         if (this.stateFilter === 'inactive' && s.State === 'active') return false
+        if (this.transportFilter !== 'all' && s.Transport !== this.transportFilter) return false
         if (!q) return true
         const hay = [s.Hostname, s.Username, s.PublicIP, s.LocalIP, s.AgentID, s.ID, s.Transport, s.AgentVersion]
           .filter(Boolean)
@@ -361,6 +370,7 @@ export default {
   margin-bottom: 16px;
 }
 .filter-select { width: 160px; flex-shrink: 0; }
+.filter-select + .filter-select { width: 140px; }
 
 .expand-cell { color: var(--faint); }
 .transport { font-size: 12px; color: var(--muted); }
@@ -460,6 +470,6 @@ export default {
 
 @media (max-width: 640px) {
   .filters { flex-direction: column; }
-  .filter-select { width: 100%; }
+  .filter-select, .filter-select + .filter-select { width: 100%; }
 }
 </style>

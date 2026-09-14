@@ -92,7 +92,7 @@ class Monitor:
             print(f"\n{GREEN}Monitor stopped.{RESET}")
 
     def refresh(self):
-        health = self._api("/api/health")
+        health = self._api("/api/status")
         sessions = self._api("/api/sessions")
 
         if health is None:

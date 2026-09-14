@@ -1,5 +1,42 @@
 # WorldC2 — Changelog
 
+## v1.7.0 — Round 6: public health hardened, authenticated status endpoint, implant fleet view (2026-09-15)
+
+Sixth maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Implant fleet panel in the dashboard** — a new panel breaks the current sessions
+  down by transport and by agent version (chips with counts, most common version first).
+  Agent-version chips that are not the most common one are visually flagged as behind
+  (`is-outdated`), so outdated implants stand out at a glance. The panel renders only
+  when there is data and reuses the existing design system.
+- **Transport filter in the Sessions view** — a dedicated select next to the state
+  filter (values derived from the live sessions), completing the observability loop of
+  rounds 4–5: transport and version are now queryable, not just visible.
+
+### Changed (Bugs/Seguridad)
+
+- **`/api/health` is now liveness-only** — the public payload shrinks to
+  `{"status":"ok"}`: no active session counts, listener details or uptime leak to
+  unauthenticated callers anymore (the Docker healthcheck only needs the HTTP 200, the
+  console badge only needs liveness). The full telemetry moved to a new authenticated
+  `GET /api/status` gated by `sessions:list`. `scripts/console.py` and
+  `scripts/monitor.py` were updated in the same round to consume `/api/status` with
+  their existing Bearer tokens.
+- **`?purge=true` on an unknown session id now returns 404** instead of silently
+  succeeding: `PurgeSession` checks `GetSession` before the hard delete so a typo'd id
+  cannot look like a successful purge. Deleting a known-but-inactive session still
+  works; covered by a contract test pinning the db-layer behavior (`DeleteSession`
+  stays a no-op on unknown ids, `GetSession` signals `sql.ErrNoRows`).
+
+### Documentation
+
+- DEVELOPER_GUIDE documents `GET /api/status` and the reduced public payload;
+  OpenAPI spec adds `/api/status` and aligns the `/api/health` response schema;
+  CHANGELOG entry v1.7.0 (this one).
+
 ## v1.6.0 — Round 5: individual loot purge, session metadata in console, enforced FK cleanup (2026-09-15)
 
 Fifth maintenance round executed by the four-agent flow (Director → Implementaciones →

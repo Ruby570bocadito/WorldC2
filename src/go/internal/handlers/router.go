@@ -68,7 +68,11 @@ func (r *Router) Setup() *http.ServeMux {
 	// Public endpoints
 	mux.HandleFunc("/api/login", cors(audit(rate(loginLimit(r.handleLogin)))))
 	mux.HandleFunc("/api/refresh", cors(audit(rate(r.handleRefresh))))
+	// Liveness only: no operational telemetry on an unauthenticated route.
 	mux.HandleFunc("/api/health", cors(audit(rate(r.handleHealth))))
+
+	// Authenticated operational telemetry (moved off the public health route)
+	mux.HandleFunc("/api/status", cors(auth(audit(rate(perm("sessions:list")(r.handleStatus))))))
 
 	// Sessions
 	mux.HandleFunc("/api/sessions", cors(auth(audit(rate(perm("sessions:list")(r.handleListSessions))))))

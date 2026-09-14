@@ -154,7 +154,8 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/health` | No | Server health |
+| GET | `/api/health` | No | Liveness only (`{"status":"ok"}` — no telemetry) |
+| GET | `/api/status` | Yes | Operational telemetry: active sessions, listeners, uptime (`sessions:list`) |
 | GET | `/api/sessions` | Yes | List sessions (includes `AgentVersion`, `Transport`, `Privilege`, `Fingerprint` observability fields) |
 | GET | `/api/sessions/:id` | Yes | Session detail |
 | DELETE | `/api/sessions/:id` | Yes | Kill agent; add `?purge=true` to hard-delete the record together with its tasks and persisted loot (`sessions:kill`) |

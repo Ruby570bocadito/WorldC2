@@ -132,7 +132,8 @@ cp config.example.yaml config.yaml
 # Run — the console is served on the API port automatically
 ./dist/worldc2-server -config config.yaml
 # Dashboard:  http://localhost:9090
-# Health:     http://localhost:9090/api/health
+# Health:     http://localhost:9090/api/health   (liveness only, public)
+# Status:     http://localhost:9090/api/status   (telemetry, Bearer required)
 ```
 
 ### Docker

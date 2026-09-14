@@ -144,8 +144,20 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
-// handleHealth returns server health status.
+// handleHealth returns a minimal liveness payload. It is the only public
+// endpoint besides login/refresh: no session counts, listener details or
+// uptime leak to unauthenticated callers (liveness is all that load balancers
+// and the Docker healthcheck need). The full telemetry lives in /api/status.
 func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "ok",
+	})
+}
+
+// handleStatus returns the operational telemetry that used to be exposed on
+// the public /api/health: active session count, listeners and uptime. It is
+// authenticated and gated by sessions:list so only real operators see it.
+func (r *Router) handleStatus(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
 		"active_sessions": r.server.ActiveSessions(),

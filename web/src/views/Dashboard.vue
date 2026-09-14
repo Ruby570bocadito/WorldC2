@@ -22,6 +22,28 @@
       </div>
     </div>
 
+    <!-- implant fleet: transport & version breakdown -->
+    <div v-if="fleetRows.length" class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Implant fleet</span>
+        <span class="small muted">transport and agent version breakdown · latest version first</span>
+      </div>
+      <div class="fleet-body">
+        <div v-for="g in fleetRows" :key="g.label" class="fleet-group">
+          <span class="fleet-label">{{ g.label }}</span>
+          <span
+            v-for="row in g.rows"
+            :key="g.label + row.name"
+            class="fleet-chip mono"
+            :class="{ 'is-outdated': row.outdated }"
+            :title="row.outdated ? row.count + ' agent(s) behind the most common version' : row.count + ' agent(s)'"
+          >
+            {{ row.name }} · {{ row.count }}
+          </span>
+        </div>
+      </div>
+    </div>
+
     <div class="grid-2">
       <!-- sessions sparkline -->
       <div class="panel">
@@ -182,6 +204,27 @@ export default {
       return [...this.sessions]
         .sort((a, b) => new Date(b.LastSeen || 0) - new Date(a.LastSeen || 0))
         .slice(0, 6)
+    },
+    fleetRows() {
+      const byKey = (key) => {
+        const counts = {}
+        for (const s of this.sessions) {
+          const v = s[key]
+          if (!v) continue
+          counts[v] = (counts[v] || 0) + 1
+        }
+        const entries = Object.entries(counts).sort((a, b) => b[1] - a[1])
+        const top = entries.length ? entries[0][0] : null
+        return entries.map(([name, count]) => ({
+          name,
+          count,
+          outdated: key === 'AgentVersion' && top && name !== top,
+        }))
+      }
+      return [
+        { label: 'Transports', rows: byKey('Transport') },
+        { label: 'Agent versions', rows: byKey('AgentVersion') },
+      ].filter((g) => g.rows.length)
     },
     peak() {
       return Math.max(0, ...this.history)
@@ -403,4 +446,40 @@ export default {
   color: var(--text);
 }
 .cmd-output.is-error { color: var(--danger); border-color: rgba(229, 72, 77, 0.35); }
+
+/* implant fleet */
+.fleet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fleet-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fleet-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-family: var(--mono);
+  color: var(--faint);
+  min-width: 120px;
+}
+.fleet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+.fleet-chip.is-outdated {
+  color: var(--warning, #e5b348);
+  border-color: rgba(229, 179, 72, 0.4);
+}
 </style>

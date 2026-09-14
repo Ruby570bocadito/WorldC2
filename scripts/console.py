@@ -335,7 +335,7 @@ Type {GREEN}help{RESET} to see available commands.
 
     def do_listeners(self, arg):
         """Show active C2 listeners."""
-        h = self._api("GET", "/api/health")
+        h = self._api("GET", "/api/status")
         if h:
             print(f"  Active listeners: {h.get('listeners',0)}")
             print(f"  Sessions: {h.get('active_sessions',0)}")
@@ -343,7 +343,7 @@ Type {GREEN}help{RESET} to see available commands.
 
     def do_health(self, arg):
         """Server health check."""
-        h = self._api("GET", "/api/health")
+        h = self._api("GET", "/api/status")
         print(json.dumps(h, indent=2))
 
     def do_exit(self, arg):
@@ -409,7 +409,7 @@ def main():
         sys.exit(1)
 
     # Health check
-    h = console._api("GET", "/api/health")
+    h = console._api("GET", "/api/status")
     if h.get("error"):
         print(f"{RED}Cannot connect to {args.server}: {h['error']}{RESET}")
         sys.exit(1)

@@ -22,6 +22,15 @@ components:
   schemas:
     Health:
       type: object
+      description: Liveness-only public payload (no operational telemetry)
+      properties:
+        status:
+          type: string
+          example: ok
+
+    Status:
+      type: object
+      description: Authenticated operational telemetry (requires sessions:list)
       properties:
         status:
           type: string
@@ -235,15 +244,33 @@ paths:
 
   /api/health:
     get:
-      summary: Server health check
+      summary: Liveness check (public, telemetry-free)
       tags: [System]
       responses:
         '200':
-          description: Server is healthy
+          description: Server is alive — no session counts, listener details or uptime
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Health'
+
+  /api/status:
+    get:
+      summary: Operational telemetry (requires sessions:list)
+      tags: [System]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Active sessions, listeners and uptime
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Insufficient permissions
 
   /api/sessions:
     get:

@@ -739,7 +739,12 @@ func (s *Server) KillAgent(agentID string) error {
 func (s *Server) PurgeSession(agentID string) error {
 	sess := s.resolveSession(agentID)
 	if sess == nil {
-		// Not live right now: still purge any persisted history by ID.
+		// Not live right now: purge the persisted history by ID, but fail
+		// loudly when the id does not refer to any row either — silently
+		// succeeding on a typo would hide real operator mistakes.
+		if _, err := s.db.GetSession(agentID); err != nil {
+			return fmt.Errorf("session not found")
+		}
 		if err := s.db.DeleteSession(agentID); err != nil {
 			return fmt.Errorf("purge session: %w", err)
 		}
