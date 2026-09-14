@@ -1,5 +1,31 @@
 # WorldC2 — Changelog
 
+## v1.12.0 — Round 11: fail-fast config validation, loot column sorting (2026-09-14)
+
+Eleventh maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Changed (Bugs/Seguridad)
+
+- **Configuration is validated at startup (fail-fast)** — a new `Config.Validate()`
+  runs after CLI-flag overrides and refuses to start on: duplicate or zero ports among
+  the listeners that cannot be disabled (C2, API, HTTP, WS; DNS/WebRTC 0 remains a
+  legitimate "off"), `max_sessions` or `session_timeout` of zero (the latter would reap
+  every session instantly), an unsupported `tls.min_version` (previously warn-and-ignore,
+  leaving the TLS floor at the default), an unknown `logging.level`, and
+  `logging.output: file` without a path. `internal/config` gains its first test suite
+  (9 packages with tests).
+
+### Added (Implementaciones)
+
+- **Column sorting in the Files view** — Filename, Size and Captured headers are
+  click-to-sort with direction indicators (Captured defaults to newest-first). Sorting
+  composes with the session/module filters and the text search, and the select-all
+  scope follows the sorted, filtered rows.
+- **Roles and permissions matrix in DEVELOPER_GUIDE** — the full role→permission table
+  (including the round 9 `collab:read` split) with notes on how per-method routes map
+  to permissions.
+
 ## v1.11.0 — Round 10: refresh token rotation with replay denial (2026-09-14)
 
 Tenth maintenance round executed by the four-agent flow (Director → Implementaciones →

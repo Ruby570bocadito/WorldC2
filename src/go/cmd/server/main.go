@@ -51,6 +51,13 @@ func main() {
 		cfg.TLS.Enabled = false
 	}
 
+	// Validate AFTER the CLI overrides so flags can repair a config file:
+	// `-port 9001` must be able to fix a conflicting server.port without
+	// editing the YAML.
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Failed to start: %v", err)
+	}
+
 	// Open database. Setting WORLDC2_MASTER_KEY enables at-rest encryption
 	// (AES-256-GCM) for sensitive columns such as vault passwords and
 	// operator notes. Any non-empty passphrase works — the encryptor

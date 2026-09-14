@@ -66,11 +66,17 @@
                 @change="toggleAll"
               />
             </th>
-            <th>Filename</th>
+            <th class="sortable" @click="setSort('filename')">
+              Filename <span class="sort-ind">{{ sortIndicator('filename') }}</span>
+            </th>
             <th>Session</th>
             <th>Module</th>
-            <th>Size</th>
-            <th>Captured</th>
+            <th class="sortable" @click="setSort('size')">
+              Size <span class="sort-ind">{{ sortIndicator('size') }}</span>
+            </th>
+            <th class="sortable" @click="setSort('created')">
+              Captured <span class="sort-ind">{{ sortIndicator('created') }}</span>
+            </th>
             <th style="width: 88px" />
           </tr>
         </thead>
@@ -156,6 +162,8 @@ export default {
       query: '',
       sessionFilter: 'all',
       moduleFilter: 'all',
+      sortKey: 'created',
+      sortDir: -1,
       timer: null,
     }
   },
@@ -174,12 +182,20 @@ export default {
     },
     filtered() {
       const q = this.query.trim().toLowerCase()
-      return this.files.filter((f) => {
+      const rows = this.files.filter((f) => {
         if (this.sessionFilter !== 'all' && f.session_id !== this.sessionFilter) return false
         if (this.moduleFilter !== 'all' && f.module !== this.moduleFilter) return false
         if (!q) return true
         const hay = [f.filename, f.session_id, f.module].filter(Boolean).join(' ').toLowerCase()
         return hay.includes(q)
+      })
+      const dir = this.sortDir
+      const key = this.sortKey
+      return rows.sort((a, b) => {
+        const av = a[key] || ''
+        const bv = b[key] || ''
+        if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+        return String(av).localeCompare(String(bv)) * dir
       })
     },
   },
@@ -250,6 +266,19 @@ export default {
       const i = this.selected.indexOf(id)
       if (i >= 0) this.selected.splice(i, 1)
       else this.selected.push(id)
+    },
+    setSort(key) {
+      if (this.sortKey === key) {
+        this.sortDir = -this.sortDir
+      } else {
+        this.sortKey = key
+        // Captured defaults to newest-first; the rest to ascending.
+        this.sortDir = key === 'created' ? -1 : 1
+      }
+    },
+    sortIndicator(key) {
+      if (this.sortKey !== key) return ''
+      return this.sortDir === 1 ? '↑' : '↓'
     },
     toggleAll() {
       const allMarked = this.filtered.every((f) => this.selected.includes(f.id))
@@ -325,6 +354,17 @@ export default {
 .col-check input {
   accent-color: var(--accent, #6b8afd);
   cursor: pointer;
+}
+.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.sortable:hover {
+  color: var(--text);
+}
+.sort-ind {
+  color: var(--faint);
+  font-size: 10px;
 }
 .head-actions {
   display: flex;

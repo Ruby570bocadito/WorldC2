@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -133,6 +134,76 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Validate checks structural constraints that would otherwise surface as
+// cryptic "address already in use" bind errors, a session reaper that kills
+// everything instantly, or a TLS floor that is silently ignored. Fail-fast
+// at startup: a misconfigured C2 must refuse to start rather than run
+// half-configured. DNS and WebRTC ports of 0 legitimately disable those
+// transports; the main C2, API, HTTP and WS listeners do not have a
+// disable mode and must be set and mutually distinct.
+func (c *Config) Validate() error {
+	var errs []string
+
+	required := []struct {
+		name string
+		port uint16
+	}{
+		{"server.port", c.Server.Port},
+		{"api.port", c.API.Port},
+		{"transport.http_port", c.Transport.HTTPPort},
+		{"transport.ws_port", c.Transport.WSPort},
+	}
+	if c.Transport.WebRTCPort > 0 {
+		required = append(required, struct {
+			name string
+			port uint16
+		}{"transport.webrtc_port", c.Transport.WebRTCPort})
+	}
+	if c.Transport.DNSPort > 0 {
+		required = append(required, struct {
+			name string
+			port uint16
+		}{"transport.dns_port", c.Transport.DNSPort})
+	}
+	seen := make(map[uint16]string, len(required))
+	for _, r := range required {
+		if r.port == 0 {
+			errs = append(errs, r.name+" must be non-zero")
+			continue
+		}
+		if other, dup := seen[r.port]; dup {
+			errs = append(errs, fmt.Sprintf("%s and %s both use port %d", r.name, other, r.port))
+			continue
+		}
+		seen[r.port] = r.name
+	}
+
+	if c.Server.MaxSessions == 0 {
+		errs = append(errs, "server.max_sessions must be non-zero")
+	}
+	if c.Server.SessionTimeout <= 0 {
+		errs = append(errs, `server.session_timeout must be positive (e.g. "300s") — 0 would reap sessions instantly`)
+	}
+	switch c.TLS.MinVersion {
+	case "", "1.2", "1.3":
+	default:
+		errs = append(errs, fmt.Sprintf("tls.min_version %q not supported (use \"1.2\" or \"1.3\")", c.TLS.MinVersion))
+	}
+	switch c.Logging.Level {
+	case "", "debug", "info", "warn", "error":
+	default:
+		errs = append(errs, fmt.Sprintf("logging.level %q not supported (debug|info|warn|error)", c.Logging.Level))
+	}
+	if c.Logging.Output == "file" && c.Logging.File == "" {
+		errs = append(errs, "logging.output=file requires logging.file")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid configuration: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // Save writes config to a YAML file.

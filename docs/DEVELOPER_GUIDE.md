@@ -185,6 +185,37 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate |
 | GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator — resolves the account by numeric id, revokes its JWTs by username, 404 on unknown ids |
 
+## Roles and permissions matrix
+
+| Capability | Permission | admin | operator | viewer | auditor |
+|---|---|:-:|:-:|:-:|:-:|
+| List sessions | `sessions:list` | ✅ | ✅ | ✅ | ✅ |
+| View session detail | `sessions:view` | ✅ | ✅ | ✅ | ✅ |
+| Kill / purge session | `sessions:kill` | ✅ | ❌ | ❌ | ❌ |
+| Execute commands | `commands:execute` | ✅ | ✅ | ❌ | ❌ |
+| Broadcast commands | `commands:broadcast` | ✅ | ✅ | ❌ | ❌ |
+| List modules | `modules:list` | ✅ | ✅ | ✅ | ✅ |
+| Push modules | `modules:push` | ✅ | ✅ | ❌ | ❌ |
+| Delete modules | `modules:delete` | ✅ | ❌ | ❌ | ❌ |
+| Read vault (credentials) | `vault:read` | ✅ | ✅ | ✅ | ✅ |
+| Create vault entries | `vault:create` | ✅ | ✅ | ❌ | ❌ |
+| Delete vault entries | `vault:delete` | ✅ | ❌ | ❌ | ❌ |
+| Download loot | `files:download` | ✅ | ✅ | ✅ | ✅ |
+| Upload loot | `files:upload` | ✅ | ✅ | ❌ | ❌ |
+| Purge loot (single or all) | `files:delete` | ✅ | ❌ | ❌ | ❌ |
+| SOCKS / port forwarding | `socks:start`, `portfwd:start` | ✅ | ✅ | ❌ | ❌ |
+| Read notes & profiles | `collab:read` | ✅ | ✅ | ✅ | ✅ |
+| Write notes, lock, profiles | `collab:write` | ✅ | ✅ | ❌ | ❌ |
+| Generate reports | `report:generate` | ✅ | ✅ | ❌ | ❌ |
+| Read audit log | `audit:read` | ✅ | ❌ | ❌ | ✅ |
+| Manage operators / webhooks / mTLS | admin-only routes | ✅ | ❌ | ❌ | ❌ |
+
+Notes: GET routes on `/api/files` and `/api/modules` use the read permission of
+their family; DELETE `/api/files` reuses `files:delete` (same capability as the
+per-id route). `collab:read` was added in round 9 — previously the read-only
+roles could not view operator notes. Custom roles can be defined in config and
+are validated against the same permission strings.
+
 ## mTLS end-to-end flow
 
 1. **Enable mTLS on the server** (`config.yaml`):
