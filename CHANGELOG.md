@@ -1,5 +1,51 @@
 # WorldC2 — Changelog
 
+## v1.5.0 — Round 4: session observability, persistent loot listing, legacy ciphertext convergence (2026-09-15)
+
+Fourth maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Session records now carry observability fields** — `sessions.agent_version`,
+  `transport`, `fingerprint` and `privilege` (columns existed since migration 2 but were
+  never written). `UpsertSession` persists them; the admission path fills `AgentVersion`
+  from the agent's `SessionInit`, `Transport` from the listener that admitted the
+  connection, `Privilege` from the admin flag (`user`/`admin`) and `Fingerprint` with the
+  SHA-256 of the mTLS client certificate when the transport presents one (plain transports
+  stay empty; a later plain re-upsert does not clobber an existing fingerprint). All four
+  surface through `GET /api/sessions` and session detail.
+- **Loot listing is now persistent** — the `file_records` table (migration 5, previously
+  unused) receives one row per `Store`/`Finalize` operation; `GET /api/files` merges the
+  current run's in-memory records with the persisted rows from previous runs
+  (deduplicated by id), `Get`/`Read` fall back to the persisted record so downloads keep
+  working after a server restart. `DeleteSession` cleans the session's `file_records`
+  rows (enforced FK) alongside its tasks. Covered by unit tests (persistence across
+  manager instances, cross-restart `Read`, nil-safety without a DB) and verified live in
+  the round's smoke (exfil → restart → download returns the original bytes).
+
+### Changed
+
+- **Legacy at-rest ciphertext converges to the v2 format** (`Bugs/Seguridad`): on startup
+  with `WORLDC2_MASTER_KEY` configured, columns encrypted with the pre-v2 bare-sha256 key
+  (`server_secrets.value`, `credentials.password`, `credentials.notes`) are decrypted with
+  the legacy key and re-encrypted with the PBKDF2-stretched one (`[DB] re-encrypted N
+  legacy column value(s) to v2 format`). Rows that do not decrypt (plaintext values from
+  databases that never used a master key) are skipped in place. This closes the mixed-
+  format window opened by the round-3 KDF upgrade; encrypted databases now converge to a
+  single ciphertext generation instead of staying mixed forever. Covered by a test that
+  seeds a legacy database, reopens it with the master key and asserts the on-disk values
+  are `v2.`, values survive, and a second open is idempotent.
+- **Removed dead code** (`Pulimiento`): none this round — the remaining `migrations.go`
+  helpers (`Rollback`, `GetMigrationVersion`, `splitSQL`/`splitLines`/`trimSpace`) are
+  used internally by `Migrate`/`Rollback` and were kept as the maintenance surface.
+
+### Documentation
+
+- README loot row and Known-gaps block updated (loot persistence + legacy convergence);
+  DEVELOPER_GUIDE documents the merged file listing and the new session observability
+  fields; CHANGELOG entry v1.5.0 (this one).
+
 ## v1.4.0 — Round 3: hardened at-rest crypto, tunnel lifecycle, persistent webhooks, agent port flags (2026-09-15)
 
 Third maintenance round executed by the four-agent flow (Director → Implementaciones →

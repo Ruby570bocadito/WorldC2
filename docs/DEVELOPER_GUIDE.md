@@ -155,14 +155,14 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/health` | No | Server health |
-| GET | `/api/sessions` | Yes | List sessions |
+| GET | `/api/sessions` | Yes | List sessions (includes `AgentVersion`, `Transport`, `Privilege`, `Fingerprint` observability fields) |
 | GET | `/api/sessions/:id` | Yes | Session detail |
 | DELETE | `/api/sessions/:id` | Yes | Kill agent |
 | POST | `/api/cmd` | Yes | Execute command |
 | POST | `/api/broadcast` | Yes | Broadcast command |
 | GET | `/api/vault` | Yes | List credentials |
 | POST | `/api/vault` | Yes | Store credential |
-| GET | `/api/files` | Yes | List files |
+| GET | `/api/files` | Yes | List files (current run + persisted `file_records` rows from previous runs) |
 | POST | `/api/files` | Yes | Upload file |
 | GET | `/api/modules` | Yes | List modules |
 | POST | `/api/modules` | Yes | Register module |

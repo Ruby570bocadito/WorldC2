@@ -199,7 +199,16 @@ type FileManager struct {
 	baseDir string
 	files   []FileRecord
 	mu      sync.RWMutex
+
+	// db (optional) persists every loot record into the file_records table
+	// so the listing survives server restarts. nil-safe: all DB calls are
+	// skipped when the manager was created without SetDB (tests).
+	db *db.DB
 }
+
+// SetDB attaches the persistence layer. Must be called before any Store or
+// Finalize to have effect on the listing.
+func (f *FileManager) SetDB(database *db.DB) { f.db = database }
 
 // FileRecord represents an exfiltrated file entry.
 type FileRecord struct {
@@ -255,7 +264,23 @@ func (f *FileManager) Store(sessionID, filename, module string, data []byte) (*F
 	}
 
 	f.files = append(f.files, rec)
+	f.persist(&rec)
 	return &rec, nil
+}
+
+// persist best-effort writes a record to the DB layer; a failure is logged
+// and does not fail the exfil path (the in-memory record is authoritative
+// for the current run).
+func (f *FileManager) persist(rec *FileRecord) {
+	if f.db == nil {
+		return
+	}
+	if err := f.db.InsertFileRecord(&db.FileRecord{
+		ID: rec.ID, SessionID: rec.SessionID, Filename: rec.Filename,
+		Module: rec.Module, Size: rec.Size, Path: rec.Path, Created: rec.Created,
+	}); err != nil {
+		log.Printf("[FILES] persist loot record %s: %v", rec.ID, err)
+	}
 }
 
 // Get returns a file record by ID.
@@ -266,6 +291,29 @@ func (f *FileManager) Get(id string) (*FileRecord, error) {
 	for _, rec := range f.files {
 		if rec.ID == id {
 			return &rec, nil
+		}
+	}
+	return f.getFromDB(id)
+}
+
+// getFromDB resolves a loot record that belongs to a previous run. The file
+// body lives in the loot directory (path persisted), so Read keeps working
+// across restarts without any in-memory state.
+func (f *FileManager) getFromDB(id string) (*FileRecord, error) {
+	if f.db == nil {
+		return nil, fmt.Errorf("file not found: %s", id)
+	}
+	records, err := f.db.ListFileRecords()
+	if err != nil {
+		return nil, fmt.Errorf("file not found: %s", id)
+	}
+	for _, rec := range records {
+		if rec.ID == id {
+			out := FileRecord{
+				ID: rec.ID, Filename: rec.Filename, SessionID: rec.SessionID,
+				Module: rec.Module, Size: rec.Size, Path: rec.Path, Created: rec.Created,
+			}
+			return &out, nil
 		}
 	}
 	return nil, fmt.Errorf("file not found: %s", id)
@@ -309,33 +357,53 @@ func (f *FileManager) Finalize(sessionID, filename, module, srcPath string, size
 		Created:   time.Now(),
 	}
 	f.files = append(f.files, rec)
+	f.persist(&rec)
 	return &rec, nil
 }
 
 // Read reads the contents of a stored file.
 func (f *FileManager) Read(id string) ([]byte, *FileRecord, error) {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
-	for _, rec := range f.files {
-		if rec.ID == id {
-			data, err := os.ReadFile(rec.Path)
-			if err != nil {
-				return nil, nil, fmt.Errorf("read file: %w", err)
-			}
-			return data, &rec, nil
-		}
+	rec, err := f.Get(id)
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil, nil, fmt.Errorf("file not found: %s", id)
+	data, err := os.ReadFile(rec.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read file: %w", err)
+	}
+	return data, rec, nil
 }
 
-// List returns all file records.
+// List returns all file records: this run's in-memory entries plus the
+// persisted rows from previous runs (deduplicated by ID).
 func (f *FileManager) List() []FileRecord {
 	f.mu.RLock()
-	defer f.mu.RUnlock()
+	inMemory := make([]FileRecord, len(f.files))
+	copy(inMemory, f.files)
+	f.mu.RUnlock()
 
-	result := make([]FileRecord, len(f.files))
-	copy(result, f.files)
+	result := make([]FileRecord, 0, len(inMemory))
+	seen := make(map[string]bool, len(inMemory))
+	for _, rec := range inMemory {
+		result = append(result, rec)
+		seen[rec.ID] = true
+	}
+
+	if f.db != nil {
+		if persisted, err := f.db.ListFileRecords(); err == nil {
+			for _, rec := range persisted {
+				if !seen[rec.ID] {
+					result = append(result, FileRecord{
+						ID: rec.ID, Filename: rec.Filename, SessionID: rec.SessionID,
+						Module: rec.Module, Size: rec.Size, Path: rec.Path, Created: rec.Created,
+					})
+					seen[rec.ID] = true
+				}
+			}
+		} else {
+			log.Printf("[FILES] list persisted loot: %v", err)
+		}
+	}
 	return result
 }
 

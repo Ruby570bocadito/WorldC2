@@ -236,3 +236,66 @@ func TestOpenWithEncryptionV2Format(t *testing.T) {
 		t.Fatalf("legacy value mismatch: %q", creds2[0].Password)
 	}
 }
+
+func TestLegacyColumnsConvergeToV2OnOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	master := []byte("convergence-master-key")
+
+	// 1) Legacy era: rows written with the bare-sha256 encryptor.
+	legacy, _ := NewEncryptor(master)
+	d0, err := Open(path)
+	if err != nil {
+		t.Fatalf("open legacy era: %v", err)
+	}
+	legacyCT, _ := legacy.EncryptString("legacy-secret-password")
+	legacyNotes, _ := legacy.EncryptString("legacy note")
+	// Full row: ListCredentials scans every column into a string, so the
+	// seeded row must not carry NULLs in optional fields.
+	if _, err := d0.conn.Exec(`INSERT INTO credentials (id, username, password, domain, host, service, source, notes, captured) VALUES ('c1','u1',?,'dom','host','svc','src',?,'2026-01-01')`, legacyCT, legacyNotes); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+	legacySecret, _ := legacy.EncryptString("legacy-jwt-secret")
+	if _, err := d0.conn.Exec(`INSERT INTO server_secrets (key, value) VALUES ('jwt_signing_key', ?)`, legacySecret); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	d0.Close()
+
+	// 2) v2 era: reopen with the master key → legacy rows must converge.
+	d1, err := OpenWithEncryption(path, master)
+	if err != nil {
+		t.Fatalf("open v2 era: %v", err)
+	}
+	defer d1.Close()
+
+	var pwCT, notesCT, secretCT string
+	d1.conn.QueryRow(`SELECT password FROM credentials WHERE id='c1'`).Scan(&pwCT)
+	d1.conn.QueryRow(`SELECT notes FROM credentials WHERE id='c1'`).Scan(&notesCT)
+	d1.conn.QueryRow(`SELECT value FROM server_secrets WHERE key='jwt_signing_key'`).Scan(&secretCT)
+	if !strings.HasPrefix(pwCT, v2Prefix) || !strings.HasPrefix(notesCT, v2Prefix) || !strings.HasPrefix(secretCT, v2Prefix) {
+		t.Fatalf("legacy rows must converge to v2: pw=%.3s notes=%.3s secret=%.3s", pwCT, notesCT, secretCT)
+	}
+
+	creds, err := d1.ListCredentials()
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("list: n=%d err=%v", len(creds), err)
+	}
+	if creds[0].Password != "legacy-secret-password" || creds[0].Notes != "legacy note" {
+		t.Fatalf("values changed during convergence: %+v", creds[0])
+	}
+	secret, err := d1.GetSecret("jwt_signing_key")
+	if err != nil || string(secret) != "legacy-jwt-secret" {
+		t.Fatalf("secret roundtrip: %q err=%v", secret, err)
+	}
+
+	// 3) Idempotence: a second open must not rewrite or damage anything.
+	d1.Close()
+	d2, err := OpenWithEncryption(path, master)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d2.Close()
+	creds2, _ := d2.ListCredentials()
+	if len(creds2) != 1 || creds2[0].Password != "legacy-secret-password" {
+		t.Fatalf("idempotence broken: %+v", creds2)
+	}
+}

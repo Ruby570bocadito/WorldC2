@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	"golang.org/x/crypto/pbkdf2"
@@ -200,5 +201,72 @@ func (d *DB) ensureKDFSalt() ([]byte, error) {
 
 	default:
 		return nil, fmt.Errorf("read kdf salt: %w", err)
+	}
+}
+
+// reencryptLegacyColumns migrates at-rest ciphertext written before the KDF
+// upgrade (bare sha256 key, no "v2." prefix) to the v2 format, so databases
+// converge to a single ciphertext generation instead of staying mixed
+// forever. Runs once at OpenWithEncryption when a master key is configured.
+//
+// Rows that fail to decrypt (plaintext rows from databases that previously
+// ran without a master key, or tampered values) are skipped in place: the
+// regular read path keeps applying the same semantics it always had.
+func (d *DB) reencryptLegacyColumns() {
+	if d.enc == nil || d.enc.gcmV2 == nil {
+		return
+	}
+
+	specs := []struct {
+		table, pk, col string
+	}{
+		{"server_secrets", "key", "value"},
+		{"credentials", "id", "password"},
+		{"credentials", "id", "notes"},
+	}
+
+	reencrypted := 0
+	for _, s := range specs {
+		d.mu.Lock()
+		rows, err := d.conn.Query(`SELECT ` + s.pk + `, ` + s.col + ` FROM ` + s.table + ` WHERE ` + s.col + ` IS NOT NULL AND ` + s.col + ` != '' AND ` + s.col + ` NOT LIKE 'v2.%'`)
+		if err != nil {
+			d.mu.Unlock()
+			log.Printf("[DB] reencrypt scan %s.%s: %v", s.table, s.col, err)
+			continue
+		}
+
+		type pending struct{ pk, plain string }
+		var batch []pending
+		for rows.Next() {
+			var pk, val string
+			if err := rows.Scan(&pk, &val); err != nil {
+				continue
+			}
+			plain, err := d.enc.DecryptString(val)
+			if err != nil {
+				// Not ours (plaintext or foreign ciphertext): leave as-is.
+				continue
+			}
+			batch = append(batch, pending{pk: pk, plain: plain})
+		}
+		rows.Close()
+
+		for _, item := range batch {
+			ct, err := d.enc.EncryptString(item.plain)
+			if err != nil {
+				log.Printf("[DB] reencrypt %s.%s/%s: %v", s.table, s.col, item.pk, err)
+				continue
+			}
+			if _, err := d.conn.Exec(`UPDATE `+s.table+` SET `+s.col+`=? WHERE `+s.pk+`=?`, ct, item.pk); err != nil {
+				log.Printf("[DB] reencrypt update %s.%s/%s: %v", s.table, s.col, item.pk, err)
+				continue
+			}
+			reencrypted++
+		}
+		d.mu.Unlock()
+	}
+
+	if reencrypted > 0 {
+		log.Printf("[DB] re-encrypted %d legacy column value(s) to v2 format", reencrypted)
 	}
 }

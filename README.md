@@ -38,7 +38,7 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 👥 RBAC | ✅ Working | `admin` / `operator` / `viewer` / `auditor` roles, per-endpoint permissions |
 | 📜 Audit log | ✅ Working | Actions stored in SQLite, SIEM forwarding hook |
 | 🔌 Modular task system | ✅ Working | Protobuf envelopes, dynamic module push; manifests HMAC-signed on registration and re-verified before every push (tampered manifests rejected) |
-| 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection |
+| 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection; listing persisted in SQLite (`file_records`) and re-hydrated on restart, downloads keep working across restarts |
 | 🌐 SOCKS5 / port-forward tunnels | ✅ Working | TCP relaying through agents |
 | 🗄️ SQLite storage | ✅ Working | Transactional migrations; optional AES-256-GCM at-rest encryption for secrets (`WORLDC2_MASTER_KEY`) with PBKDF2-stretched key + per-DB salt (legacy ciphertext still readable) |
 | 🐳 Docker packaging | ✅ Working | Multi-stage build, non-root runtime user, healthcheck |
@@ -64,7 +64,8 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 >   tracked in the agent reports. Round 3 closed the tunnel/exfil reaper gap (tunnels now tear
 >   down on session close and are reaped after 15 min idle) and upgraded the at-rest KDF:
 >   with `WORLDC2_MASTER_KEY` set, new writes use PBKDF2-HMAC-SHA256 (600 000 iterations,
->   per-database salt in `_kdf_meta`) while legacy ciphertext stays readable.
+>   per-database salt in `_kdf_meta`). Round 4 also re-encrypts legacy (pre-v2) column values
+>   to the stretched format on startup, so encrypted databases converge to a single generation.
 
 ---
 

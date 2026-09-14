@@ -259,6 +259,11 @@ func (s *Server) Start() error {
 	// run on the session read loop: the reader would stop consuming the
 	// very chunks the resume is supposed to receive (deadlock until the
 	// 300s task timeout). Fire it on its own goroutine instead.
+	// Loot listing persistence: every Store/Finalize also lands in the
+	// file_records table (migration 5, previously unused) so the loot
+	// view survives server restarts.
+	s.files.SetDB(s.db)
+
 	s.exfil = NewExfilAssembler("loot", s.files, func(sessionID, transferID string, offset int64) {
 		go func() {
 			if _, err := s.CreateTask(sessionID, fmt.Sprintf("__exfil_resume %s %d", transferID, offset), 300); err != nil {
@@ -806,6 +811,9 @@ func (s *Server) handleConnection(conn net.Conn, transportName string) {
 		ID: sess.ID, AgentID: sess.AgentID, Hostname: sess.Hostname,
 		OS: sess.OS, Arch: sess.Arch, Username: sess.Username,
 		IsAdmin: sess.IsAdmin, State: "active", LastSeen: time.Now(),
+		AgentVersion: sess.AgentVersion, Transport: transportName,
+		Fingerprint: tlsPeerFingerprint(conn),
+		Privilege:   sessionPrivilege(sess.IsAdmin),
 	})
 	s.db.LogAction(0, "session", fmt.Sprintf("%s via %s", sess.Hostname, transportName))
 
@@ -1089,4 +1097,37 @@ func (c *peekConn) Read(b []byte) (int, error) {
 		return n, nil
 	}
 	return c.Conn.Read(b)
+}
+
+// sessionPrivilege maps the boolean admin flag to the privilege column value
+// persisted alongside the session (readable via GET /api/sessions).
+func sessionPrivilege(isAdmin bool) string {
+	if isAdmin {
+		return "admin"
+	}
+	return "user"
+}
+
+// tlsPeerFingerprint extracts the SHA-256 fingerprint (hex) of the client
+// certificate when the transport is mTLS; empty for plaintext or server-only
+// TLS connections. It unwraps the admission peekConn so the *tls.Conn is
+// reachable, and is best-effort: any mismatch just yields "".
+func tlsPeerFingerprint(conn net.Conn) string {
+	for depth := 0; depth < 4 && conn != nil; depth++ {
+		if pc, ok := conn.(*peekConn); ok {
+			conn = pc.Conn
+			continue
+		}
+		break
+	}
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return ""
+	}
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(state.PeerCertificates[0].Raw)
+	return fmt.Sprintf("%x", sum[:])
 }
