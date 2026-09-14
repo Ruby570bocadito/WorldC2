@@ -32,7 +32,7 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | Feature | Status | Notes |
 |---------|--------|-------|
 | 🔐 Encrypted C2 channel | ✅ Working | X25519 key exchange + XChaCha20-Poly1305 (AEAD) per session |
-| 📡 Multi-transport listeners | ✅ Working | TCP+TLS, WebSocket (+ WebRTC and DNS fallbacks); the HTTP long-poll listener is experimental — not agent-reachable yet |
+| 📡 Multi-transport listeners | ✅ Working | TCP+TLS, HTTP long-poll, WebSocket, WebRTC and DNS (opt-in) — all five reachable from the agent's fallback chain, the HTTP transport covered by a loopback framing test |
 | 🖥️ Operator web console | ✅ Working | Vue 3 + Vite, dark minimalist UI, live polling |
 | 🧩 REST API + JWT auth | ✅ Working | Access + refresh tokens (`token_use` claims), bcrypt operators |
 | 👥 RBAC | ✅ Working | `admin` / `operator` / `viewer` / `auditor` roles, per-endpoint permissions |
@@ -49,11 +49,17 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
 >
-> **Known gaps (round 1 audit):** the HTTP long-poll listener (`transport/http.go`) is
-> experimental: the agent fallback chain does not speak its protocol yet, so agents cannot
-> connect through it — use TLS, WebSocket, WebRTC or DNS. The agent also **auto-installs
-> persistence** on first run (cron/bashrc, registry/schtasks, LaunchAgent depending on OS);
-> in authorized labs run it with `-no-persist` to disable that behavior.
+> **Known gaps (round 2 audit):**
+> - The HTTP long-poll transport (port 8445) was **repaired in round 2** and is now part of the
+>   agent fallback chain (`TLS → TCP → HTTP → WebSocket → WebRTC → DNS`); it carries the same
+>   length-prefixed envelope framing over `POST /register` (agent→server) and `POST /poll`
+>   (long-poll, server→agent). Covered by loopback tests, including concurrent read/write and
+>   multi-megabyte frames.
+> - The agent **auto-installs persistence** on first run (cron/bashrc, registry/schtasks,
+>   LaunchAgent depending on OS); in authorized labs run it with `-no-persist` to disable that
+>   behavior.
+> - Anti-replay by envelope sequence number, a reaper for abandoned tunnels/exfil transfers and
+>   an upgraded at-rest KDF remain open items tracked in the agent reports.
 
 ---
 

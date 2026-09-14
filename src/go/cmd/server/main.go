@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/auth"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/config"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/db"
@@ -68,7 +69,17 @@ func main() {
 	for _, op := range cfg.Operators {
 		if op.Password != "" {
 			// Password is already bcrypt hashed in config
-			if err := database.CreateOperatorWithHash(op.Username, op.Password, op.Role); err != nil {
+			role := op.Role
+			if role == "" {
+				role = "operator"
+			}
+			if !auth.IsValidRole(role) {
+				// A typo'd role would create an operator that
+				// authenticates but fails every RBAC check.
+				log.Printf("[AUTH] Operator %q: unknown role %q (valid: admin, operator, viewer, auditor) — skipped", op.Username, op.Role)
+				continue
+			}
+			if err := database.CreateOperatorWithHash(op.Username, op.Password, role); err != nil {
 				log.Printf("[AUTH] Operator %q: %v", op.Username, err)
 			}
 		}
@@ -94,7 +105,7 @@ func main() {
 	server := c2.New(cfg, database)
 
 	// Wire up REST API handlers (separate package to avoid circular imports)
-	router := handlers.NewRouter(server)
+	router := handlers.NewRouter(server, cfg.Server.TrustedProxies)
 	server.SetAPIMux(router.Setup())
 
 	if err := server.Start(); err != nil {

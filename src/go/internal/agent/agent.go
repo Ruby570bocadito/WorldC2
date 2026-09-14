@@ -301,7 +301,16 @@ func (a *Agent) connect() error {
 			name: "HTTP",
 			dial: func() (net.Conn, error) {
 				httpPort := "8445"
-				return net.DialTimeout("tcp", net.JoinHostPort(host, httpPort), 10*time.Second)
+				base := net.JoinHostPort(host, httpPort)
+				// The server serves the long-poll listener over
+				// TLS whenever tls.enabled (independent of
+				// mTLS). Try HTTPS first, then plaintext, so
+				// the transport works in both postures.
+				conn, err := transport.DialHTTP("https://" + base)
+				if err == nil {
+					return conn, nil
+				}
+				return transport.DialHTTP("http://" + base)
 			},
 		},
 		{

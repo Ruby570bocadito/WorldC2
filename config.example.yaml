@@ -6,6 +6,11 @@ server:
   port: 8443
   max_sessions: 1000
   session_timeout: 300s
+  # IPs/CIDRs of reverse proxies in front of the API whose X-Forwarded-For
+  # header may be used to resolve real client IPs (rate limiting key).
+  # Leave empty when the API is exposed directly — the header is then ignored
+  # and cannot be used to bypass per-IP limits.
+  trusted_proxies: []
 
 api:
   port: 9090

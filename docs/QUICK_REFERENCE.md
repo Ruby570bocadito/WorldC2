@@ -95,7 +95,7 @@ make help           # Show all targets
 | Port | Protocol | Use |
 |------|----------|-----|
 | 8443 | TCP/TLS | Agent C2 |
-| 8445 | HTTP | Long-polling (experimental — not agent-reachable yet) |
+| 8445 | HTTP | Long-poll transport (agent fallback chain; TLS when `tls.enabled`) |
 | 8446 | WebSocket | Real-time |
 | 8447 | HTTP(S) | WebRTC signaling + data channels |
 | 9090 | HTTP | API + Dashboard |

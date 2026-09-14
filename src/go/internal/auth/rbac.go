@@ -75,6 +75,22 @@ var (
 	}
 )
 
+// predefinedRoleNames lists the roles registered by NewRBAC. It is the
+// single source of truth for role validation at operator creation.
+var predefinedRoleNames = []string{"admin", "operator", "viewer", "auditor"}
+
+// IsValidRole reports whether name is one of the predefined RBAC roles.
+// Operator creation paths use it so a typo'd or missing role can never
+// mint a login that authenticates but fails every permission check.
+func IsValidRole(name string) bool {
+	for _, r := range predefinedRoleNames {
+		if r == name {
+			return true
+		}
+	}
+	return false
+}
+
 // NewRBAC creates a new RBAC manager with predefined roles.
 func NewRBAC() *RBAC {
 	rbac := &RBAC{

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -19,11 +20,20 @@ type Router struct {
 	loginLimiter *c2.RateLimiter
 }
 
-// NewRouter creates a new router with middleware.
-func NewRouter(server *c2.Server) *Router {
+// NewRouter creates a new router with middleware. trustedProxies lists the
+// IPs/CIDRs of reverse proxies in front of the API (used to resolve real
+// client IPs for rate limiting); empty means "no proxy, trust the socket".
+func NewRouter(server *c2.Server, trustedProxies []string) *Router {
+	rateLimiter := c2.NewRateLimiter(60, time.Minute)
+	if err := rateLimiter.SetTrustedProxies(trustedProxies); err != nil {
+		// NewRouter cannot return an error without breaking the wiring, but
+		// a misconfigured proxy list would silently key the bucket on a
+		// spoofable header — refuse to start instead.
+		panic(fmt.Sprintf("trusted_proxies: %v", err))
+	}
 	return &Router{
 		server:       server,
-		rateLimiter:  c2.NewRateLimiter(60, time.Minute),
+		rateLimiter:  rateLimiter,
 		loginLimiter: c2.NewRateLimiter(10, time.Minute),
 	}
 }

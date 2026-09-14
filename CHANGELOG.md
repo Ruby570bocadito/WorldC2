@@ -1,5 +1,68 @@
 # WorldC2 — Changelog
 
+## v1.3.0 — Agent round 2: HTTP long-poll transport repaired end-to-end (2026-09-15)
+
+Second maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **HTTP long-poll transport is now fully functional** (`transport/http.go`, port 8445).
+  Round 1 found it unreachable end-to-end: the agent fallback dialled raw TCP, the
+  server→agent path (`GetPendingWrite`) had zero call sites, and `httpConn.Read` held a
+  mutex its own `Write` needed (deadlock) while discarding framing surplus. The transport
+  was rewritten around two explicit endpoints — `POST /register` (agent→server frames,
+  immediate ack, session assignment via `X-Session-ID`) and `POST /poll` (long-poll,
+  server→agent frames, up to 25 s) — with per-direction FIFO queues (frame order
+  preserved), partial-read buffering on both halves (no data loss at any buffer
+  boundary), deadlines honoured per the `net.Conn` contract (expired deadlines fail
+  fast; a zero `time.Time` really clears them), a 10-minute idle reap replacing the
+  missing kernel keepalive, and `net.Listen` moved into `Start()` so bind errors surface
+  synchronously and `Addr()` reports the real bound address. The dead request/response
+  `HTTPAgent` was replaced by the live `DialHTTP` client, and the agent's HTTP fallback
+  now speaks the protocol (trying HTTPS first, then plaintext, mirroring WebRTC).
+  Covered by 7 loopback tests: framing roundtrip with the real admission peek,
+  3 MiB frame both directions, concurrent read/write (deadlock regression), server and
+  client deadline semantics, session close propagation and wire guards.
+- **Trusted reverse-proxy support for rate limiting** — new `server.trusted_proxies`
+  config key (IPs/CIDRs). When the API socket peer is a trusted proxy, the rate-limit
+  key is resolved from `X-Forwarded-For` (rightmost non-trusted hop; leftmost when all
+  hops are trusted; malformed entries skipped). Without trusted proxies (default) the
+  header is ignored, so a spoofed `X-Forwarded-For` can never rotate the bucket.
+  Invalid CIDRs fail at startup instead of silently trusting a spoofable header.
+
+### Fixed (Bugs/Seguridad)
+
+- **Operator roles are validated at creation** (`auth.IsValidRole`): the API rejects
+  unknown roles with 400, config seeding skips them with a clear log line, and token
+  refresh fails with a 403 naming the real cause. Previously a missing/typo'd role
+  (e.g. an operator entry without `role:`) produced an operator that logged in but
+  failed every RBAC check with a misleading `authentication required`.
+- **Session detail no longer reports `TaskCount: 0`** — `GetSession` omitted the
+  `task_count` subquery that `ListSessions` had, so `/api/sessions/{id}` contradicted
+  its own task list.
+- **Registration guard on the HTTP transport:** a registration request carrying a
+  non-empty body is rejected (400) instead of silently dropping the bytes, and
+  `/poll` answers 410 once a session is closed so agents reconnect promptly.
+
+### Removed (Pulimiento)
+
+- **Dead offline task-queue layer pruned** (`QueuedTask`, `QueueTask`, `GetPendingTasks`,
+  `MarkTaskDelivered`, `CompleteTask`, `ListQueuedTasks`, `DeleteQueuedTask`,
+  `scanQueuedTasks` — ~100 lines, zero callers). Migration 7 stays in the ledger so
+  existing databases keep their applied-history integrity; the dormant `task_queue`
+  table is simply left alone.
+
+### Documentation (Pulimiento)
+
+- README feature table and known-gaps block updated: the HTTP long-poll transport is
+  documented as working (round-1 "experimental" claim retired), with the transport
+  fallback chain spelled out.
+- QUICK_REFERENCE port table: 8445 no longer marked experimental.
+- DEVELOPER_GUIDE: transport fallback chain documented, HTTP long-poll wire semantics
+  (`/register`, `/poll`, ordering, idle reap) added to Protocol Flow.
+- `config.example.yaml` documents `server.trusted_proxies`.
+
 ## v1.2.1 — Agent round 1: audit fixes, security hardening, honest docs (2026-09-14)
 
 First maintenance round executed by the four-agent flow (Director → Implementaciones →

@@ -34,6 +34,10 @@ type ServerConfig struct {
 	Port           uint16        `yaml:"port"`
 	MaxSessions    uint32        `yaml:"max_sessions"`
 	SessionTimeout time.Duration `yaml:"session_timeout"`
+	// TrustedProxies lists IPs/CIDRs of reverse proxies whose
+	// X-Forwarded-For header the API may believe (rate limiting key).
+	// Empty (default) = never trust the header.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 // APIConfig holds REST API configuration.

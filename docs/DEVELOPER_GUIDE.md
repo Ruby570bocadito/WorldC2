@@ -33,7 +33,19 @@
 
 ## Protocol Flow
 
+The envelope flow below is identical on every listener. The agent's fallback chain is
+`TLS (8443) → TCP (8443) → HTTP long-poll (8445) → WebSocket (8446) → WebRTC (8447) → DNS (opt-in)`;
+all five carry the same length-prefixed protobuf envelopes, so sessions are transport-agnostic.
+
 ### 1. Connection & Key Exchange
+
+> **HTTP long-poll specifics (port 8445):** `POST /register` with no `X-Session-ID`
+> creates a session (empty body required) and returns the id in the `X-Session-ID`
+> response header; subsequent `POST /register` requests carry agent→server frames in
+> the body and answer an empty 200 ack. Server→agent data flows via `POST /poll`,
+> which long-polls up to 25 s for the next queued frame. Each direction keeps its own
+> FIFO queue, so frame order is preserved across HTTP hops. Idle agents are reaped
+> after 10 minutes without inbound data (agents heartbeat every 25-35 s).
 
 ```
 Agent                              Server

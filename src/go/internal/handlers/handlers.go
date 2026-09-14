@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/auth"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2/session"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/crypto"
@@ -119,6 +120,12 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 	}
 	if operatorRole == "" {
 		http.Error(w, `{"error":"operator not found"}`, 401)
+		return
+	}
+	if !auth.IsValidRole(operatorRole) {
+		// A legacy row with a missing/unknown role would authenticate and
+		// then fail every RBAC check — fail the refresh with the real cause.
+		http.Error(w, `{"error":"operator role is not a valid RBAC role"}`, 403)
 		return
 	}
 
@@ -478,6 +485,12 @@ func (r *Router) handleOperators(w http.ResponseWriter, req *http.Request) {
 		}
 		if opReq.Role == "" {
 			opReq.Role = "operator"
+		}
+		if !auth.IsValidRole(opReq.Role) {
+			// Without this check a typo like "Admin" would create an
+			// operator that logs in but fails every permission check.
+			http.Error(w, `{"error":"role must be one of: admin, operator, viewer, auditor"}`, 400)
+			return
 		}
 		if err := r.server.DB().CreateOperator(opReq.Username, opReq.Password, opReq.Role); err != nil {
 			http.Error(w, err.Error(), 409)
