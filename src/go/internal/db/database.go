@@ -421,6 +421,46 @@ func (d *DB) AuthenticateOperator(username, password string) (*OperatorRecord, e
 	return op, nil
 }
 
+// OperatorExists reports whether an operator account with the given username
+// exists. The auth middleware consults this on every request so a deleted
+// operator's outstanding JWTs are rejected immediately — and stay rejected
+// across restarts, where the in-memory revocation map loses its entries.
+func (d *DB) OperatorExists(username string) (bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var one int
+	err := d.conn.QueryRow(`SELECT 1 FROM operators WHERE username=?`, username).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check operator: %w", err)
+	}
+	return true, nil
+}
+
+// GetOperatorByID fetches an operator by its numeric primary key, without
+// the password hash. Used by the delete endpoint to resolve WHICH username
+// it just removed (JWT revocation is keyed by username, not by numeric id)
+// and to distinguish "unknown id" from a real delete.
+func (d *DB) GetOperatorByID(id int) (*OperatorRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	op := &OperatorRecord{}
+	err := d.conn.QueryRow(
+		`SELECT id, username, password_hash, role, created_at FROM operators WHERE id=?`, id,
+	).Scan(&op.ID, &op.Username, &op.PasswordHash, &op.Role, &op.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get operator: %w", err)
+	}
+	return op, nil
+}
+
 // ListOperators returns all operators (without password hashes).
 func (d *DB) ListOperators() ([]map[string]interface{}, error) {
 	d.mu.RLock()

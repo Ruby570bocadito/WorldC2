@@ -1,5 +1,45 @@
 # WorldC2 — Changelog
 
+## v1.9.0 — Round 8: operator revocation hardened, version deep-links, selective loot purge (2026-09-14)
+
+Eighth maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Fixed (Bugs/Seguridad)
+
+- **Deleted operators now lose API access immediately — and permanently** — three
+  stacked defects made operator deletion toothless: (1) the in-memory JWT revocation
+  was keyed by the raw URL segment (a numeric id) while tokens carry the username, so
+  `RevokeUser` silently revoked nothing; (2) the revocation map loses its entries on
+  restart while the persisted signing key does not, resurrecting the deleted
+  operator's tokens; (3) deleting an unknown id returned a false success. Fixed by
+  resolving the account before deletion (404 on unknown ids, 400 on malformed ones),
+  revoking by username, and adding an operators-table existence check to the auth
+  middleware — a deleted username is rejected on every request, restart or not.
+- **`RevokeUser` keying fixed at the handler** — `DELETE /api/operators/:id` now
+  resolves the operator first (new `GetOperatorByID`) and revokes the JWT subject it
+  actually carried. Response includes the removed username; audit log records both.
+
+### Added (Implementaciones)
+
+- **Agent-version filter in Sessions** — a third select (values derived from the live
+  sessions) completes the filter row; the text filter still matches versions too.
+- **Fleet version chips are now deep-links** — clicking an agent-version chip in the
+  dashboard navigates to `/sessions?version=x` with the filter pre-applied
+  (`?transport=` keeps working; both query params are watched by Sessions). This
+  closes the fleet deep-link loop opened in round 7.
+- **Selective loot purge** — the Files view gains per-row checkboxes (with select-all
+  in the header) and a "Purge selected (N)" action that purges the chosen artifacts
+  one by one, reporting partial failures honestly instead of all-or-nothing.
+
+### Documentation (Pulimiento)
+
+- **mTLS end-to-end flow in DEVELOPER_GUIDE** — CA generation/persistence, client
+  certificate issuance via `/api/mtls/cert`, agent startup with `-tls-cert/-tls-key`,
+  and what the server enforces (dragged since round 2).
+- OpenAPI: `/api/operators/{id}` delete documented with its real semantics (400/404,
+  username in the response, revocation notes).
+
 ## v1.8.0 — Round 7: bulk loot purge, fleet deep-links, configurable CORS, proxy-aware audit logs (2026-09-14)
 
 Seventh maintenance round executed by the four-agent flow (Director → Implementaciones →

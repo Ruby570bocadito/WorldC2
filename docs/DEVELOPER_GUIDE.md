@@ -183,8 +183,46 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET | `/api/report` | Yes | Generate engagement report (`report:generate`) |
 | GET/POST/DELETE | `/api/webhooks` | Admin | SIEM webhook destinations (persisted in `webhooks`, migration 9; re-hydrated on start; DELETE takes `?id=...` from the POST response) |
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate |
-| GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator (revokes their JWTs) |
+| GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator — resolves the account by numeric id, revokes its JWTs by username, 404 on unknown ids |
 
+## mTLS end-to-end flow
+
+1. **Enable mTLS on the server** (`config.yaml`):
+   ```yaml
+   tls:
+     enabled: true
+     auto_cert: true   # server generates its own CA if none is present
+     mtls: true        # agents must present a client certificate issued by that CA
+   ```
+   With `auto_cert: true` the server creates and persists a CA (in the
+   encrypted `server_secrets` store) on first start; the CA is reused across
+   restarts, so previously issued agent certificates keep working.
+
+2. **Issue an agent certificate** (admin token required):
+   ```bash
+   curl -X POST https://<c2>:9090/api/mtls/cert \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"agent_id": "lab-agent-01"}'
+   ```
+   The response contains `ca_pem`, `cert_pem` and `key_pem` (PEM blocks).
+   `agent_id` is optional — the server generates one when omitted. Save the
+   three blocks to files; the key is shown **only once**.
+
+3. **Start the agent with its client certificate**:
+   ```bash
+   worldc2-agent -server <c2-host>:8443 \
+                 -tls-cert lab-agent-01.crt -tls-key lab-agent-01.key
+   ```
+
+4. **What the server enforces**: with `tls.mtls: true` a TLS handshake
+   without a certificate issued by the server's CA fails before any C2
+   protocol bytes are exchanged. When the connection is admitted, the
+   SHA-256 fingerprint of the client certificate is persisted in the
+   session's `fingerprint` column (round 4) and shown by the console's
+   session detail panel.
+
+## Development
 ## Development
 
 ### Build

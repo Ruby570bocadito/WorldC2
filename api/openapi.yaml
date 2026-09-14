@@ -731,6 +731,12 @@ paths:
   /api/operators/{id}:
     delete:
       summary: Delete an operator (admin only)
+      description: >-
+        Deletes the operator account and revokes its outstanding JWTs. The
+        revocation is keyed by the operator's username (the JWT subject) and
+        backed by an operators-table existence check in the auth middleware,
+        so removed tokens stay rejected even across server restarts. An
+        unknown or malformed id returns 404/400 instead of a false success.
       tags: [Operators]
       security:
         - BearerAuth: []
@@ -742,7 +748,25 @@ paths:
             type: integer
       responses:
         '200':
-          description: Operator deleted
+          description: Operator deleted (response includes the removed username)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+                  username:
+                    type: string
+        '400':
+          description: Malformed id (not an integer)
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Admin role required
+        '404':
+          description: Unknown operator id
 
   /api/notes:
     get:

@@ -258,11 +258,13 @@ export default {
     fmtAgo,
     shortId,
     openFiltered(group, name) {
-      // Transport chips deep-link into Sessions with the transport filter
-      // pre-applied (Sessions reads ?transport=). Version chips stay
-      // informational — the sessions view has no version select yet.
-      if (group !== 'Transports') return
-      this.$router.push({ path: '/sessions', query: { transport: name } })
+      // Deep-link into Sessions with the matching filter pre-applied
+      // (Sessions reads ?transport= and ?version=).
+      if (group === 'Transports') {
+        this.$router.push({ path: '/sessions', query: { transport: name } })
+      } else if (group === 'Agent versions') {
+        this.$router.push({ path: '/sessions', query: { version: name } })
+      }
     },
     async refresh() {
       const [sessRes, vaultRes, modRes] = await Promise.allSettled([

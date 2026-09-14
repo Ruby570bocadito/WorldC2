@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -574,17 +575,33 @@ func (r *Router) handleOperatorDelete(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	id := req.URL.Path[len("/api/operators/"):]
-	if err := r.server.DB().DeleteOperator(id); err != nil {
-		http.Error(w, err.Error(), 404)
+	idStr := req.URL.Path[len("/api/operators/"):]
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid operator id", 400)
 		return
 	}
-	// Invalidate outstanding JWTs for this operator: the signing key is
-	// persisted in the secrets store, so without an explicit revocation
-	// the deleted operator would keep API access until token expiry.
-	r.server.TokenManager().RevokeUser(id)
-	r.server.DB().LogAction(0, "operator_delete", id)
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	// Resolve the operator FIRST: (a) an unknown id must 404 instead of
+	// pretending to delete something, and (b) revocation is keyed by
+	// USERNAME (the JWT subject), not by the numeric id — revoking the
+	// raw path segment would silently revoke nothing.
+	op, err := r.server.DB().GetOperatorByID(id)
+	if err != nil {
+		http.Error(w, "operator not found", 404)
+		return
+	}
+	if err := r.server.DB().DeleteOperator(idStr); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	// Invalidate outstanding JWTs for this operator. The persistence of the
+	// signing key means an in-memory revocation alone would be lost on
+	// restart; the auth middleware additionally checks operator existence
+	// on every request, so both layers have to be bypassed to keep a dead
+	// operator's token alive.
+	r.server.TokenManager().RevokeUser(op.Username)
+	r.server.DB().LogAction(0, "operator_delete", op.Username+" (id "+idStr+")")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "username": op.Username})
 }
 
 // handleNotes manages session notes.

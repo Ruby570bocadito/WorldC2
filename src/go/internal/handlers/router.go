@@ -204,6 +204,18 @@ func (r *Router) authMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
+			// Existence check: a deleted operator's outstanding JWTs
+			// must not keep working. The in-memory RevokeUser map
+			// loses entries on restart while the signing key (and
+			// thus old tokens' validity) does not — checking the
+			// operators table per request closes that window for
+			// good. Tiny table, one indexed lookup.
+			if exists, err := r.server.DB().OperatorExists(username); err != nil || !exists {
+				r.server.DB().LogAction(0, "auth_failed", r.rateLimiter.ResolveClientIP(req))
+				http.Error(w, `{"error":"operator no longer exists"}`, 401)
+				return
+			}
+
 			req.Header.Set("X-Auth-User", username)
 			req.Header.Set("X-Auth-Role", role)
 			next(w, req)

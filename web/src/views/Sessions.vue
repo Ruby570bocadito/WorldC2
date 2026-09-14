@@ -32,6 +32,10 @@
         <option value="all">All transports</option>
         <option v-for="t in transports" :key="t" :value="t">{{ t }}</option>
       </select>
+      <select v-model="versionFilter" class="select filter-select" aria-label="Agent version filter">
+        <option value="all">All versions</option>
+        <option v-for="v in versions" :key="v" :value="v">{{ v }}</option>
+      </select>
     </div>
 
     <!-- table -->
@@ -220,6 +224,7 @@ export default {
       query: '',
       stateFilter: 'all',
       transportFilter: 'all',
+      versionFilter: 'all',
       expanded: null,
       tasks: [],
       // notes
@@ -237,12 +242,16 @@ export default {
     transports() {
       return [...new Set(this.sessions.map((s) => s.Transport).filter(Boolean))].sort()
     },
+    versions() {
+      return [...new Set(this.sessions.map((s) => s.AgentVersion).filter(Boolean))].sort()
+    },
     filtered() {
       const q = this.query.trim().toLowerCase()
       return this.sessions.filter((s) => {
         if (this.stateFilter === 'active' && s.State !== 'active') return false
         if (this.stateFilter === 'inactive' && s.State === 'active') return false
         if (this.transportFilter !== 'all' && s.Transport !== this.transportFilter) return false
+        if (this.versionFilter !== 'all' && s.AgentVersion !== this.versionFilter) return false
         if (!q) return true
         const hay = [s.Hostname, s.Username, s.PublicIP, s.LocalIP, s.AgentID, s.ID, s.Transport, s.AgentVersion]
           .filter(Boolean)
@@ -256,16 +265,19 @@ export default {
     },
   },
   mounted() {
-    this.applyQueryTransport()
+    this.applyQueryFilters()
     this.fetchSessions()
     this.timer = setInterval(() => this.fetchSessions(), 5000)
   },
   watch: {
-    // Deep-link support: the dashboard fleet chips push /sessions?transport=x.
-    // Watching the query keeps the filter in sync even when the navigation
-    // lands on an already-mounted instance of this view.
+    // Deep-link support: the dashboard fleet chips push /sessions?transport=x
+    // or /sessions?version=y. Watching the query keeps the filters in sync
+    // even when the navigation lands on an already-mounted instance.
     '$route.query.transport'() {
-      this.applyQueryTransport()
+      this.applyQueryFilters()
+    },
+    '$route.query.version'() {
+      this.applyQueryFilters()
     },
   },
   beforeUnmount() {
@@ -276,10 +288,14 @@ export default {
     fmtDate,
     shortId,
     ipOf,
-    applyQueryTransport() {
+    applyQueryFilters() {
       const t = this.$route.query.transport
       if (typeof t === 'string' && t) {
         this.transportFilter = t
+      }
+      const v = this.$route.query.version
+      if (typeof v === 'string' && v) {
+        this.versionFilter = v
       }
     },
     async fetchSessions() {

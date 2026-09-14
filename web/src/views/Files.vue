@@ -8,6 +8,17 @@
       <div class="head-actions">
         <span v-if="files.length" class="badge">{{ files.length }} files</span>
         <button
+          v-if="selectedCount"
+          class="btn btn-danger"
+          type="button"
+          :disabled="purgingSelected"
+          @click="purgeSelected"
+        >
+          <span v-if="purgingSelected" class="spinner" />
+          <IconTrash v-else :size="14" />
+          Purge selected ({{ selectedCount }})
+        </button>
+        <button
           v-if="files.length"
           class="btn btn-danger"
           type="button"
@@ -25,6 +36,14 @@
       <table class="table">
         <thead>
           <tr>
+            <th class="col-check">
+              <input
+                type="checkbox"
+                :checked="allSelected"
+                aria-label="Select all files"
+                @change="toggleAll"
+              />
+            </th>
             <th>Filename</th>
             <th>Session</th>
             <th>Module</th>
@@ -35,6 +54,14 @@
         </thead>
         <tbody>
           <tr v-for="f in files" :key="f.id">
+            <td class="col-check">
+              <input
+                type="checkbox"
+                :checked="selected.includes(f.id)"
+                :aria-label="'Select ' + (f.filename || f.id)"
+                @change="toggle(f.id)"
+              />
+            </td>
             <td class="mono fw">{{ f.filename || '—' }}</td>
             <td class="num">{{ shortId(f.session_id, 12) }}</td>
             <td class="muted">{{ f.module || '—' }}</td>
@@ -97,8 +124,18 @@ export default {
       downloading: null,
       deleting: null,
       purgingAll: false,
+      purgingSelected: false,
+      selected: [],
       timer: null,
     }
+  },
+  computed: {
+    selectedCount() {
+      return this.selected.length
+    },
+    allSelected() {
+      return this.files.length > 0 && this.selected.length === this.files.length
+    },
   },
   mounted() {
     this.fetchFiles()
@@ -150,6 +187,47 @@ export default {
         this.deleting = null
       }
     },
+    toggle(id) {
+      const i = this.selected.indexOf(id)
+      if (i >= 0) this.selected.splice(i, 1)
+      else this.selected.push(id)
+    },
+    toggleAll() {
+      this.selected = this.allSelected ? [] : this.files.map((f) => f.id)
+    },
+    async purgeSelected() {
+      const ids = [...this.selected]
+      const ok = window.confirm(
+        'Purge ' + ids.length + ' selected file(s)? Artifacts on disk and their records are removed permanently.'
+      )
+      if (!ok) return
+      this.purgingSelected = true
+      let purged = 0
+      let failed = 0
+      try {
+        // DELETE /api/files/:id per selection. Sequential on purpose: a lab
+        // scale list is small, and per-file results are clearer than a
+        // single all-or-nothing call for a partial selection.
+        for (const id of ids) {
+          try {
+            await api.del('/api/files/' + encodeURIComponent(id))
+            purged++
+          } catch (e) {
+            if (e.expired) throw e
+            failed++
+          }
+        }
+        if (failed) {
+          notify.error('Purged ' + purged + ', failed ' + failed)
+        } else {
+          notify.ok('Purged ' + purged + ' file(s)')
+        }
+        this.selected = []
+        this.fetchFiles()
+      } finally {
+        this.purgingSelected = false
+      }
+    },
     async purgeAll() {
       const n = this.files.length
       const ok = window.confirm(
@@ -175,6 +253,14 @@ export default {
 
 <style scoped>
 .fw { font-weight: 600; }
+.col-check {
+  width: 34px;
+  text-align: center;
+}
+.col-check input {
+  accent-color: var(--accent, #6b8afd);
+  cursor: pointer;
+}
 .head-actions {
   display: flex;
   align-items: center;
