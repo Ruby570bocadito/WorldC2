@@ -87,6 +87,15 @@
               <button
                 class="icon-btn"
                 type="button"
+                title="View loot from this session"
+                aria-label="View loot"
+                @click="viewLoot(s)"
+              >
+                <IconFiles :size="15" />
+              </button>
+              <button
+                class="icon-btn"
+                type="button"
                 title="Session notes"
                 aria-label="Session notes"
                 @click="openNotes(s)"
@@ -212,11 +221,11 @@
 import { api } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtAgo, fmtDate, shortId, ipOf } from '../utils/format.js'
-import { IconSearch, IconNote, IconClose, IconSessions, IconTrash } from '../components/icons.js'
+import { IconSearch, IconNote, IconClose, IconSessions, IconTrash, IconFiles } from '../components/icons.js'
 
 export default {
   name: 'SessionsView',
-  components: { IconSearch, IconNote, IconClose, IconSessions, IconTrash },
+  components: { IconSearch, IconNote, IconClose, IconSessions, IconTrash, IconFiles },
   data() {
     return {
       sessions: [],
@@ -288,6 +297,11 @@ export default {
     fmtDate,
     shortId,
     ipOf,
+    viewLoot(s) {
+      // Deep-link into Files with this session's loot pre-filtered
+      // (Files reads ?session=).
+      this.$router.push({ path: '/files', query: { session: s.ID } })
+    },
     applyQueryFilters() {
       const t = this.$route.query.transport
       if (typeof t === 'string' && t) {

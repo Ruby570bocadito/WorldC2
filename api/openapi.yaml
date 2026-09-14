@@ -770,7 +770,7 @@ paths:
 
   /api/notes:
     get:
-      summary: List operator notes for a session
+      summary: List operator notes for a session (collab:read — every role has it)
       tags: [Collaboration]
       security:
         - BearerAuth: []

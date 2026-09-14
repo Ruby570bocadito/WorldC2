@@ -1,5 +1,35 @@
 # WorldC2 — Changelog
 
+## v1.10.0 — Round 9: collaborative reads for read-only roles, loot filtering, session→loot deep-link (2026-09-14)
+
+Ninth maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Fixed (Bugs/Seguridad)
+
+- **Read-only roles can now read session notes and config profiles** — `GET /api/notes`
+  and `GET /api/profiles` were gated by `collab:write`, a permission only admin and
+  operator hold: the `viewer` and `auditor` roles (whose stated purpose is read-only
+  review) could read captured credentials (`vault:read`) but not the operator notes an
+  auditor exists to review. A new `collab:read` permission (held by all four roles)
+  now guards the reads; writes stay behind `collab:write`. RBAC contract pinned by
+  tests (`TestCollabReadIsUniversal`, `TestCollabWriteStaysPrivileged`).
+
+### Added (Implementaciones)
+
+- **Loot filtering in the Files view** — search box plus session and module selects
+  (options derived from the listing), a matched/total badge, and a dedicated empty
+  state when filters exclude everything. Select-all now scopes to the filtered rows.
+- **Session → loot deep-link** — each session row gains a "view loot" action that
+  navigates to `/files?session=<id>` with the session filter pre-applied (Files reads
+  the query param on mount and on subsequent navigations), completing the
+  observability→action path across views.
+
+### Documentation (Pulimiento)
+
+- DEVELOPER_GUIDE: notes/profiles rows now document the read/write split; OpenAPI
+  notes GET annotated with its real permission.
+
 ## v1.9.0 — Round 8: operator revocation hardened, version deep-links, selective loot purge (2026-09-14)
 
 Eighth maintenance round executed by the four-agent flow (Director → Implementaciones →

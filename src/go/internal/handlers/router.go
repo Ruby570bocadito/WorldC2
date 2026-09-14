@@ -125,9 +125,12 @@ func (r *Router) Setup() *http.ServeMux {
 	mux.HandleFunc("/api/operators/", cors(auth(admin(audit(rate(r.handleOperatorDelete))))))
 
 	// Team collaboration
-	mux.HandleFunc("/api/notes", cors(auth(audit(rate(perm("collab:write")(r.handleNotes))))))
+	// Notes and profiles: reads are gated by collab:read (every role has
+	// it — a viewer or auditor must be able to see operator notes), writes
+	// by collab:write (admin/operator only).
+	mux.HandleFunc("/api/notes", cors(auth(audit(rate(r.permByMethod("collab:read", "collab:write")(r.handleNotes))))))
 	mux.HandleFunc("/api/lock", cors(auth(audit(rate(perm("collab:write")(r.handleLock))))))
-	mux.HandleFunc("/api/profiles", cors(auth(audit(rate(perm("collab:write")(r.handleProfiles))))))
+	mux.HandleFunc("/api/profiles", cors(auth(audit(rate(r.permByMethod("collab:read", "collab:write")(r.handleProfiles))))))
 
 	// Reporting
 	mux.HandleFunc("/api/report", cors(auth(audit(rate(perm("report:generate")(r.handleReport))))))

@@ -32,7 +32,7 @@ var (
 			"socks:start", "socks:stop",
 			"portfwd:start", "portfwd:stop",
 			"operators:create", "operators:read", "operators:delete",
-			"audit:read", "collab:write", "report:generate",
+			"audit:read", "collab:read", "collab:write", "report:generate",
 		},
 	}
 
@@ -47,7 +47,7 @@ var (
 			"files:upload", "files:download",
 			"socks:start", "socks:stop",
 			"portfwd:start", "portfwd:stop",
-			"collab:write", "report:generate",
+			"collab:read", "collab:write", "report:generate",
 		},
 	}
 
@@ -59,6 +59,7 @@ var (
 			"modules:list",
 			"vault:read",
 			"files:download",
+			"collab:read",
 		},
 	}
 
@@ -71,6 +72,7 @@ var (
 			"vault:read",
 			"files:download",
 			"audit:read",
+			"collab:read",
 		},
 	}
 )
@@ -180,6 +182,7 @@ const (
 	PermOperatorsRead     = "operators:read"
 	PermOperatorsDelete   = "operators:delete"
 	PermAuditRead         = "audit:read"
+	PermCollabRead        = "collab:read"
 	PermCollabWrite       = "collab:write"
 	PermReportGenerate    = "report:generate"
 )

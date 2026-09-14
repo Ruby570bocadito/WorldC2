@@ -177,9 +177,9 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
 | GET | `/api/files/download/:id` | Yes | Download exfiltrated file |
 | DELETE | `/api/files/:id` | Yes | Purge a single loot artifact — blob on disk, current listing and persisted record (`files:delete`, admin only) |
-| GET/POST | `/api/notes` | Yes | Session notes (`collab:write`) |
+| GET/POST | `/api/notes` | Yes | Session notes — GET requires `collab:read` (all roles), POST `collab:write` (admin/operator) |
 | POST | `/api/lock` | Yes | Lock/unlock session (`collab:write`) |
-| GET/POST | `/api/profiles` | Yes | Agent config profiles (`collab:write`) |
+| GET/POST | `/api/profiles` | Yes | Agent config profiles — GET `collab:read` (all roles), POST `collab:write` (admin/operator) |
 | GET | `/api/report` | Yes | Generate engagement report (`report:generate`) |
 | GET/POST/DELETE | `/api/webhooks` | Admin | SIEM webhook destinations (persisted in `webhooks`, migration 9; re-hydrated on start; DELETE takes `?id=...` from the POST response) |
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate |

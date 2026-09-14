@@ -6,7 +6,7 @@
         <p class="page-sub">Exfiltrated artifacts</p>
       </div>
       <div class="head-actions">
-        <span v-if="files.length" class="badge">{{ files.length }} files</span>
+        <span v-if="files.length" class="badge">{{ filtered.length }}/{{ files.length }} files</span>
         <button
           v-if="selectedCount"
           class="btn btn-danger"
@@ -32,6 +32,28 @@
       </div>
     </div>
 
+    <!-- filters -->
+    <div class="filters">
+      <div class="search-box grow">
+        <IconSearch :size="15" />
+        <input
+          v-model="query"
+          class="input"
+          type="search"
+          placeholder="Filter by filename, session or module…"
+          aria-label="Filter files"
+        />
+      </div>
+      <select v-model="sessionFilter" class="select filter-select" aria-label="Session filter">
+        <option value="all">All sessions</option>
+        <option v-for="s in sessions" :key="s" :value="s">{{ shortId(s, 12) }}</option>
+      </select>
+      <select v-model="moduleFilter" class="select filter-select" aria-label="Module filter">
+        <option value="all">All modules</option>
+        <option v-for="m in modules" :key="m" :value="m">{{ m }}</option>
+      </select>
+    </div>
+
     <div class="table-wrap">
       <table class="table">
         <thead>
@@ -53,7 +75,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in files" :key="f.id">
+          <tr v-for="f in filtered" :key="f.id">
             <td class="col-check">
               <input
                 type="checkbox"
@@ -100,6 +122,11 @@
         <span class="empty-title">No files captured</span>
         <span class="empty-hint">Artifacts exfiltrated by modules will be listed here</span>
       </div>
+      <div v-if="!loading && files.length && !filtered.length" class="empty-state">
+        <IconSearch :size="26" />
+        <span class="empty-title">No files match the filters</span>
+        <span class="empty-hint">Adjust the session/module filters or clear the search</span>
+      </div>
       <div v-if="loading" class="loading-row">
         <span class="spinner" />
         <span class="muted small">Loading files…</span>
@@ -112,11 +139,11 @@
 import { api, downloadFile } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtDate, fmtSize, shortId } from '../utils/format.js'
-import { IconDownload, IconFiles, IconTrash } from '../components/icons.js'
+import { IconDownload, IconFiles, IconSearch, IconTrash } from '../components/icons.js'
 
 export default {
   name: 'FilesView',
-  components: { IconDownload, IconFiles, IconTrash },
+  components: { IconDownload, IconFiles, IconSearch, IconTrash },
   data() {
     return {
       files: [],
@@ -126,6 +153,9 @@ export default {
       purgingAll: false,
       purgingSelected: false,
       selected: [],
+      query: '',
+      sessionFilter: 'all',
+      moduleFilter: 'all',
       timer: null,
     }
   },
@@ -134,10 +164,39 @@ export default {
       return this.selected.length
     },
     allSelected() {
-      return this.files.length > 0 && this.selected.length === this.files.length
+      return this.filtered.length > 0 && this.filtered.every((f) => this.selected.includes(f.id))
+    },
+    sessions() {
+      return [...new Set(this.files.map((f) => f.session_id).filter(Boolean))].sort()
+    },
+    modules() {
+      return [...new Set(this.files.map((f) => f.module).filter(Boolean))].sort()
+    },
+    filtered() {
+      const q = this.query.trim().toLowerCase()
+      return this.files.filter((f) => {
+        if (this.sessionFilter !== 'all' && f.session_id !== this.sessionFilter) return false
+        if (this.moduleFilter !== 'all' && f.module !== this.moduleFilter) return false
+        if (!q) return true
+        const hay = [f.filename, f.session_id, f.module].filter(Boolean).join(' ').toLowerCase()
+        return hay.includes(q)
+      })
+    },
+  },
+  watch: {
+    // Deep-link support: Sessions pushes /files?session=<id> so the operator
+    // lands on one session's loot directly.
+    '$route.query.session'(v) {
+      if (typeof v === 'string' && v) {
+        this.sessionFilter = v
+      }
     },
   },
   mounted() {
+    const s = this.$route.query.session
+    if (typeof s === 'string' && s) {
+      this.sessionFilter = s
+    }
     this.fetchFiles()
     this.timer = setInterval(() => this.fetchFiles(), 10000)
   },
@@ -193,7 +252,13 @@ export default {
       else this.selected.push(id)
     },
     toggleAll() {
-      this.selected = this.allSelected ? [] : this.files.map((f) => f.id)
+      const allMarked = this.filtered.every((f) => this.selected.includes(f.id))
+      if (allMarked) {
+        this.selected = this.selected.filter((id) => !this.filtered.some((f) => f.id === id))
+      } else {
+        const missing = this.filtered.map((f) => f.id).filter((id) => !this.selected.includes(id))
+        this.selected = [...this.selected, ...missing]
+      }
     },
     async purgeSelected() {
       const ids = [...this.selected]
