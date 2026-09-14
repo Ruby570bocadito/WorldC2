@@ -169,3 +169,63 @@ func TestDeletedOperatorTokenRejectedAfterRestart(t *testing.T) {
 		t.Fatalf("post-restart request: %d, want 401 (revocation must survive the restart)", rec.Code)
 	}
 }
+
+// TestRefreshTokenRotationFlow covers the full rotation loop over HTTP:
+// login returns a refresh token, POST /api/refresh consumes it and returns a
+// NEW refresh token alongside the access token, and replaying the consumed
+// one is denied with 401 while the replacement keeps working.
+func TestRefreshTokenRotationFlow(t *testing.T) {
+	mux, _ := buildAuthTestStack(t)
+
+	body := strings.NewReader(`{"username":"alice","password":"correct-horse-battery"}`)
+	req := httptest.NewRequest("POST", "/api/login", body)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var loginResp struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+	if loginResp.RefreshToken == "" {
+		t.Fatal("login response carries no refresh token")
+	}
+
+	// First refresh: 200 with a NEW refresh token.
+	rreq := httptest.NewRequest("POST", "/api/refresh",
+		strings.NewReader(`{"refresh_token":"`+loginResp.RefreshToken+`"}`))
+	rrec := httptest.NewRecorder()
+	mux.ServeHTTP(rrec, rreq)
+	if rrec.Code != 200 {
+		t.Fatalf("first refresh: %d %s", rrec.Code, rrec.Body.String())
+	}
+	var rotResp struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(rrec.Body.Bytes(), &rotResp); err != nil {
+		t.Fatalf("decode refresh: %v", err)
+	}
+	if rotResp.RefreshToken == "" || rotResp.RefreshToken == loginResp.RefreshToken {
+		t.Fatal("rotation did not issue a fresh refresh token")
+	}
+
+	// Replay of the consumed token: denied.
+	rreq2 := httptest.NewRequest("POST", "/api/refresh",
+		strings.NewReader(`{"refresh_token":"`+loginResp.RefreshToken+`"}`))
+	rrec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rrec2, rreq2)
+	if rrec2.Code != 401 {
+		t.Fatalf("replayed refresh: %d, want 401", rrec2.Code)
+	}
+
+	// The replacement still works (the legit client keeps access).
+	rreq3 := httptest.NewRequest("POST", "/api/refresh",
+		strings.NewReader(`{"refresh_token":"`+rotResp.RefreshToken+`"}`))
+	rrec3 := httptest.NewRecorder()
+	mux.ServeHTTP(rrec3, rreq3)
+	if rrec3.Code != 200 {
+		t.Fatalf("rotation with replacement token: %d %s", rrec3.Code, rrec3.Body.String())
+	}
+}

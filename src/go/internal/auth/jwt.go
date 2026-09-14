@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,9 @@ type jwtPayload struct {
 	TokenUse  string `json:"token_use"` // "access" or "refresh"
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
+	// Jti (JWT ID) identifies refresh tokens so rotations can deny replays
+	// of an already-consumed token. Access tokens carry none (stateless).
+	Jti string `json:"jti,omitempty"`
 }
 
 // Token type values.
@@ -52,6 +56,13 @@ type TokenManager struct {
 	// whose HMAC is still valid and whose signing key survives restarts.
 	revokedMu     sync.RWMutex
 	revokedBefore map[string]int64
+
+	// Refresh rotation (round 10): consumed refresh-token jtis are recorded
+	// here; presenting the same refresh token twice is denied with 401 so
+	// a stolen token cannot be replayed after the legitimate client has
+	// rotated. Entries are pruned lazily (expired or past a sanity cap).
+	usedMu         sync.Mutex
+	usedRefreshJti map[string]int64 // jti -> expiry unix
 }
 
 // NewTokenManager creates a new JWT token manager.
@@ -60,10 +71,11 @@ func NewTokenManager(secretKey []byte, tokenDuration time.Duration) *TokenManage
 		secretKey = generateSecretKey()
 	}
 	return &TokenManager{
-		secretKey:     secretKey,
-		tokenDuration: tokenDuration,
-		issuer:        "worldc2-c2",
-		revokedBefore: make(map[string]int64),
+		secretKey:      secretKey,
+		tokenDuration:  tokenDuration,
+		issuer:         "worldc2-c2",
+		revokedBefore:  make(map[string]int64),
+		usedRefreshJti: make(map[string]int64),
 	}
 }
 
@@ -89,6 +101,11 @@ func (tm *TokenManager) sign(headerB64, payloadB64 string) string {
 }
 
 func (tm *TokenManager) buildToken(sub, role, tokenUse string, ttl time.Duration) (string, error) {
+	return tm.buildTokenJti(sub, role, tokenUse, ttl, "")
+}
+
+// buildTokenJti is buildToken with an optional jti for refresh tokens.
+func (tm *TokenManager) buildTokenJti(sub, role, tokenUse string, ttl time.Duration, jti string) (string, error) {
 	now := time.Now().Unix()
 
 	header := jwtHeader{Alg: "HS256", Typ: "JWT"}
@@ -98,6 +115,7 @@ func (tm *TokenManager) buildToken(sub, role, tokenUse string, ttl time.Duration
 		TokenUse:  tokenUse,
 		IssuedAt:  now,
 		ExpiresAt: now + int64(ttl.Seconds()),
+		Jti:       jti,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -120,11 +138,84 @@ func (tm *TokenManager) GenerateToken(username, role string) (string, error) {
 	return tm.buildToken(username, role, TokenUseAccess, tm.tokenDuration)
 }
 
-// GenerateRefreshToken creates a long-lived refresh token.
-// Refresh tokens carry token_use=refresh and are rejected by ValidateToken,
-// so a leaked refresh token cannot be replayed against the API.
+// GenerateRefreshToken creates a long-lived refresh token carrying a unique
+// jti so rotations can deny replays of a consumed token. Refresh tokens carry
+// token_use=refresh and are rejected by ValidateToken, so a leaked refresh
+// token cannot be replayed against the API.
 func (tm *TokenManager) GenerateRefreshToken(username string) (string, error) {
-	return tm.buildToken(username, TokenUseRefresh, TokenUseRefresh, 24*time.Hour)
+	jti, err := randomJti()
+	if err != nil {
+		return "", fmt.Errorf("generate jti: %w", err)
+	}
+	return tm.buildTokenJti(username, TokenUseRefresh, TokenUseRefresh, refreshDuration, jti)
+}
+
+const refreshDuration = 24 * time.Hour
+
+// RotateRefreshToken consumes a refresh token and issues its replacement —
+// the rotation contract: each refresh token works exactly once.
+//   - A replay of an already-consumed token is DENIED (the legitimate client
+//     holds its replacement; whoever presents the old one is replaying it).
+//   - Family-wide revocation on reuse was considered and deliberately left
+//     out: the console shares localStorage across tabs, and a stale second
+//     tab could lock its own operator out. Binding refresh tokens per device
+//     is the proper fix and is tracked as follow-up design work.
+//
+// Returns the username and the jti of the NEW refresh token.
+func (tm *TokenManager) RotateRefreshToken(oldToken string) (username string, err error) {
+	// Decode WITHOUT consuming: we need the jti + expiry to record usage
+	// only after full validation succeeds.
+	sub, _, tokenUse, err := tm.validate(oldToken)
+	if err != nil {
+		return "", err
+	}
+	if tokenUse != TokenUseRefresh {
+		return "", fmt.Errorf("not a refresh token")
+	}
+
+	parts := strings.Split(oldToken, ".")
+	payloadJSON, decErr := base64.RawURLEncoding.DecodeString(parts[1])
+	if decErr != nil {
+		return "", fmt.Errorf("invalid payload encoding")
+	}
+	var payload jwtPayload
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil || payload.Jti == "" {
+		// Legacy refresh tokens (pre-rotation) carry no jti: accept and
+		// rotate them once — the replacement always carries a jti, so
+		// the fleet converges to rotatable tokens as sessions refresh.
+		if err == nil && payload.Jti == "" {
+			return sub, nil
+		}
+		return "", fmt.Errorf("invalid refresh payload")
+	}
+
+	now := time.Now().Unix()
+	tm.usedMu.Lock()
+	defer tm.usedMu.Unlock()
+	tm.pruneUsedLocked(now)
+	if _, consumed := tm.usedRefreshJti[payload.Jti]; consumed {
+		return "", fmt.Errorf("refresh token already consumed")
+	}
+	tm.usedRefreshJti[payload.Jti] = payload.ExpiresAt
+	return sub, nil
+}
+
+// pruneUsedLocked drops consumed-jti entries whose tokens have expired.
+// Caller holds usedMu.
+func (tm *TokenManager) pruneUsedLocked(now int64) {
+	for jti, exp := range tm.usedRefreshJti {
+		if exp < now {
+			delete(tm.usedRefreshJti, jti)
+		}
+	}
+}
+
+func randomJti() (string, error) {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // ValidateRefreshToken validates a refresh token and returns the username.

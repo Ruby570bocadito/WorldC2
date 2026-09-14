@@ -220,7 +220,13 @@ paths:
 
   /api/refresh:
     post:
-      summary: Exchange a refresh token for a new JWT pair
+      summary: Exchange a refresh token for a new JWT pair (one-time use)
+      description: >-
+        Refresh tokens are ROTATED: the presented token is consumed and the
+        response carries a new access token AND a new refresh token. Clients
+        must persist the replacement; replaying a consumed refresh token
+        returns 401. Legacy refresh tokens without a jti rotate once and the
+        replacement is rotatable.
       tags: [Auth]
       requestBody:
         required: true
@@ -234,9 +240,21 @@ paths:
                   type: string
       responses:
         '200':
-          description: New token pair
+          description: New token pair (token + refresh_token; store both)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  refresh_token:
+                    type: string
+                    description: Replacement refresh token (the presented one is now invalid)
+                  expires_in:
+                    type: integer
         '401':
-          description: Invalid or expired refresh token
+          description: Invalid, expired or already-consumed refresh token
           content:
             application/json:
               schema:

@@ -102,8 +102,11 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	username, err := r.server.TokenManager().ValidateRefreshToken(refreshReq.RefreshToken)
+	username, err := r.server.TokenManager().RotateRefreshToken(refreshReq.RefreshToken)
 	if err != nil {
+		// Includes the replay of an already-consumed refresh token: the
+		// legitimate client holds the replacement, so a replayed one is
+		// unambiguously a copy — deny without hinting which case failed.
 		http.Error(w, `{"error":"invalid refresh token"}`, 401)
 		return
 	}
@@ -142,9 +145,19 @@ func (r *Router) handleRefresh(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Rotation: every successful refresh also mints a NEW refresh token.
+	// The presented one was consumed by RotateRefreshToken above, so the
+	// window of any single refresh token is now one use.
+	newRefresh, err := r.server.TokenManager().GenerateRefreshToken(username)
+	if err != nil {
+		http.Error(w, `{"error":"refresh token generation failed"}`, 500)
+		return
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":      newToken,
-		"expires_in": 43200,
+		"token":         newToken,
+		"refresh_token": newRefresh,
+		"expires_in":    43200,
 	})
 }
 

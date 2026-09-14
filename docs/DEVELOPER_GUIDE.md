@@ -173,7 +173,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/POST/DELETE | `/api/portfwd` | Yes | Port forwarding |
 | GET/POST/DELETE | `/api/operators` | Admin | Operator management |
 | POST | `/api/login` | No | Authenticate, returns access + refresh JWT |
-| POST | `/api/refresh` | No | Exchange refresh token for a new access token |
+| POST | `/api/refresh` | No | Rotate: consumes the presented refresh token and returns a new access token **plus a new refresh token** (store both; replaying a consumed refresh returns 401) |
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
 | GET | `/api/files/download/:id` | Yes | Download exfiltrated file |
 | DELETE | `/api/files/:id` | Yes | Purge a single loot artifact — blob on disk, current listing and persisted record (`files:delete`, admin only) |

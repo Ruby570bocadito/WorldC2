@@ -1,5 +1,23 @@
 # WorldC2 — Changelog
 
+## v1.11.0 — Round 10: refresh token rotation with replay denial (2026-09-14)
+
+Tenth maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Changed (Bugs/Seguridad)
+
+- **Refresh tokens now rotate on every use** — `POST /api/refresh` consumes the
+  presented refresh token (identified by a new `jti` claim) and returns a **new
+  refresh token** alongside the new access token. Replaying an already-consumed
+  refresh token returns 401: a stolen token loses its value as soon as the
+  legitimate client refreshes once. Legacy jti-less refresh tokens rotate once and
+  converge to rotatable tokens as sessions refresh. Deliberate design note: family-wide
+  revocation on reuse was NOT implemented — the console shares `localStorage` across
+  tabs and a stale second tab would lock its operator out; per-device binding is the
+  proper follow-up. The console (`web/src/utils/api.js`) persists the replacement on
+  every refresh.
+
 ## v1.10.0 — Round 9: collaborative reads for read-only roles, loot filtering, session→loot deep-link (2026-09-14)
 
 Ninth maintenance round executed by the four-agent flow (Director → Implementaciones →

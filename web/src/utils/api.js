@@ -68,6 +68,10 @@ async function doRefresh() {
     const data = await res.json().catch(() => null)
     if (!data || !data.token) return null
     localStorage.setItem(TOKEN_KEY, data.token)
+    // Rotation: the server consumed the presented refresh token and issues a
+    // replacement on every refresh — persist it or the next refresh replays
+    // a consumed token and gets denied.
+    if (data.refresh_token) localStorage.setItem(REFRESH_KEY, data.refresh_token)
     const expiresIn = Number(data.expires_in) || 43200
     localStorage.setItem(EXPIRES_KEY, String(Date.now() + expiresIn * 1000))
     return data.token
