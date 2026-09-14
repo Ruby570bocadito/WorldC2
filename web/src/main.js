@@ -6,6 +6,7 @@ import Dashboard from './views/Dashboard.vue'
 import Sessions from './views/Sessions.vue'
 import Files from './views/Files.vue'
 import Modules from './views/Modules.vue'
+import Profiles from './views/Profiles.vue'
 import Operators from './views/Operators.vue'
 import Terminal from './views/Terminal.vue'
 import './assets/main.css'
@@ -18,6 +19,7 @@ const routes = [
   { path: '/terminal', name: 'Terminal', component: Terminal, meta: { requiresAuth: true, title: 'Command Runner' } },
   { path: '/files', name: 'Files', component: Files, meta: { requiresAuth: true, title: 'Files' } },
   { path: '/modules', name: 'Modules', component: Modules, meta: { requiresAuth: true, title: 'Modules' } },
+  { path: '/profiles', name: 'Profiles', component: Profiles, meta: { requiresAuth: true, title: 'Profiles' } },
   { path: '/operators', name: 'Operators', component: Operators, meta: { requiresAuth: true, requiresAdmin: true, title: 'Operators' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

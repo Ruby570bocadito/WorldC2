@@ -780,13 +780,24 @@ func (d *DB) ListAgentProfiles() ([]map[string]interface{}, error) {
 	return profiles, rows.Err()
 }
 
-// DeleteAgentProfile removes an agent profile.
+// DeleteAgentProfile removes an agent profile. Returns sql.ErrNoRows when
+// the id does not exist so callers can answer 404 instead of a silent no-op.
 func (d *DB) DeleteAgentProfile(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`DELETE FROM agent_profiles WHERE id=?`, id)
-	return err
+	res, err := d.conn.Exec(`DELETE FROM agent_profiles WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // --- Audit operations ---

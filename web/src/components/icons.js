@@ -74,6 +74,15 @@ export const IconOperators = icon('Operators', [
   p('M17.8 15.2c2 .7 3.4 2.4 3.9 4.8'),
 ])
 
+export const IconProfiles = icon('Profiles', [
+  p('M4 6h16'),
+  p('M4 12h16'),
+  p('M4 18h16'),
+  c(9.5, 6, 2),
+  c(15, 12, 2),
+  c(7.5, 18, 2),
+])
+
 /* actions */
 
 export const IconLogout = icon('Logout', [

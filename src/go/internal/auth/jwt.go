@@ -152,6 +152,29 @@ func (tm *TokenManager) GenerateRefreshToken(username string) (string, error) {
 
 const refreshDuration = 24 * time.Hour
 
+// decodeRefreshPayload extracts the payload of a signature-verified refresh
+// token and enforces the jti boundary: a refresh token without a jti cannot
+// take part in one-time-use tracking, so honoring it would accept the SAME
+// token on every presentation — an unbounded replay window against the
+// rotation contract. Pre-rotation tokens were only ever issued with a 24h
+// expiry, so any that still show up are replaying a stale credential; the
+// operator is asked to log in again (fail-closed).
+func decodeRefreshPayload(tokenString string) (jwtPayload, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return jwtPayload{}, fmt.Errorf("malformed token")
+	}
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return jwtPayload{}, fmt.Errorf("invalid payload encoding")
+	}
+	var payload jwtPayload
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil || payload.Jti == "" {
+		return jwtPayload{}, fmt.Errorf("invalid refresh payload")
+	}
+	return payload, nil
+}
+
 // RotateRefreshToken consumes a refresh token and issues its replacement —
 // the rotation contract: each refresh token works exactly once.
 //   - A replay of an already-consumed token is DENIED (the legitimate client
@@ -173,20 +196,9 @@ func (tm *TokenManager) RotateRefreshToken(oldToken string) (username string, er
 		return "", fmt.Errorf("not a refresh token")
 	}
 
-	parts := strings.Split(oldToken, ".")
-	payloadJSON, decErr := base64.RawURLEncoding.DecodeString(parts[1])
-	if decErr != nil {
-		return "", fmt.Errorf("invalid payload encoding")
-	}
-	var payload jwtPayload
-	if err := json.Unmarshal(payloadJSON, &payload); err != nil || payload.Jti == "" {
-		// Legacy refresh tokens (pre-rotation) carry no jti: accept and
-		// rotate them once — the replacement always carries a jti, so
-		// the fleet converges to rotatable tokens as sessions refresh.
-		if err == nil && payload.Jti == "" {
-			return sub, nil
-		}
-		return "", fmt.Errorf("invalid refresh payload")
+	payload, err := decodeRefreshPayload(oldToken)
+	if err != nil {
+		return "", err
 	}
 
 	now := time.Now().Unix()
@@ -219,6 +231,8 @@ func randomJti() (string, error) {
 }
 
 // ValidateRefreshToken validates a refresh token and returns the username.
+// It enforces the same jti boundary as rotation: pre-rotation no-jti
+// refresh tokens are rejected (they cannot be tracked for one-time use).
 func (tm *TokenManager) ValidateRefreshToken(tokenString string) (string, error) {
 	sub, _, tokenUse, err := tm.validate(tokenString)
 	if err != nil {
@@ -226,6 +240,9 @@ func (tm *TokenManager) ValidateRefreshToken(tokenString string) (string, error)
 	}
 	if tokenUse != TokenUseRefresh {
 		return "", fmt.Errorf("not a refresh token")
+	}
+	if _, err := decodeRefreshPayload(tokenString); err != nil {
+		return "", err
 	}
 	return sub, nil
 }

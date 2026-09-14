@@ -84,6 +84,7 @@ import {
   IconTerminal,
   IconFiles,
   IconModules,
+  IconProfiles,
   IconOperators,
   IconLogout,
   IconMenu,
@@ -95,6 +96,7 @@ const NAV = [
   { to: '/sessions', label: 'Sessions', icon: IconSessions },
   { to: '/terminal', label: 'Command Runner', icon: IconTerminal },
   { to: '/modules', label: 'Modules', icon: IconModules },
+  { to: '/profiles', label: 'Profiles', icon: IconProfiles },
   { to: '/files', label: 'Files', icon: IconFiles },
   { to: '/operators', label: 'Operators', icon: IconOperators },
 ]
@@ -108,6 +110,7 @@ export default {
     IconTerminal,
     IconFiles,
     IconModules,
+    IconProfiles,
     IconOperators,
     IconLogout,
     IconMenu,

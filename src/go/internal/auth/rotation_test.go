@@ -60,3 +60,35 @@ func TestRotationValidatesSignature(t *testing.T) {
 		t.Fatal("forged refresh token accepted")
 	}
 }
+
+// TestRotationRejectsLegacyNoJtiTokens pins the removal of the pre-rotation
+// compat shim (round 12): a refresh token without a jti cannot be tracked
+// for one-time use, so the old shim accepted the SAME token on every
+// presentation — an unbounded replay window. Signature-valid no-jti refresh
+// tokens are now rejected outright (fail-closed); a legacy operator simply
+// logs in again.
+func TestRotationRejectsLegacyNoJtiTokens(t *testing.T) {
+	tm := NewTokenManager(nil, 12*time.Hour)
+
+	// A signature-valid refresh token WITHOUT jti: exactly the shape the
+	// pre-rotation fleet minted (buildToken leaves jti empty).
+	legacy, err := tm.buildToken("alice", "admin", TokenUseRefresh, time.Hour)
+	if err != nil {
+		t.Fatalf("build legacy refresh: %v", err)
+	}
+
+	if _, err := tm.RotateRefreshToken(legacy); err == nil {
+		t.Fatal("legacy no-jti refresh token accepted by rotation")
+	}
+	// Repeated presentations stay denied too — the shim used to accept
+	// them every single time.
+	if _, err := tm.RotateRefreshToken(legacy); err == nil {
+		t.Fatal("legacy no-jti refresh token accepted on replay")
+	}
+
+	// ValidateRefreshToken keeps the same boundary: a no-jti refresh token
+	// is not a valid refresh credential, not even for inspection.
+	if _, err := tm.ValidateRefreshToken(legacy); err == nil {
+		t.Fatal("legacy no-jti refresh token accepted by ValidateRefreshToken")
+	}
+}

@@ -1,5 +1,59 @@
 # WorldC2 — Changelog
 
+## v1.13.0 — Round 12: Profiles console view, aria-sort, refresh-replay shim removal, profile validation (2026-09-14)
+
+Twelfth round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Profiles view in the operator console** — the agent-profile API existed since the early
+  rounds but no view consumed it; the console now ships a `/profiles` route (nav entry with a
+  new sliders icon) that lists profiles (name, beacon interval, jitter, transport, created),
+  creates them through a validated form and deletes them with confirmation. Deletion required
+  a new backend endpoint: `DELETE /api/profiles/:id` (`collab:write`), which answers 404 on
+  unknown ids (the store now reports `sql.ErrNoRows` via `RowsAffected`) and 400 on control
+  characters in the id.
+- **Keyboard/AT-accessible column sorting in Files** — sortable headers now carry a dynamic
+  `aria-sort` value (`ascending` / `descending` / `none`) and the click target is a real
+  `<button>` with a visible focus ring, so the round 11 sorting works from the keyboard and
+  screen readers announce the current direction.
+
+### Changed (Bugs/Seguridad)
+
+- **Pre-rotation refresh tokens are rejected outright** — `RotateRefreshToken` kept a
+  compatibility shim that accepted refresh tokens without a `jti` (minted before round 10)
+  *on every presentation*: the rotation contract ("each refresh token works exactly once")
+  was silently unenforceable for those tokens, an unbounded replay window. A no-jti refresh
+  token cannot be tracked for one-time use, so the shim is gone: `RotateRefreshToken` and
+  `ValidateRefreshToken` share a new `decodeRefreshPayload` boundary that rejects no-jti
+  refresh tokens (fail-closed; pre-rotation tokens were 24 h credentials — an operator
+  presenting one simply logs in again).
+- **`POST /api/profiles` validates input server-side** — the endpoint used to store anything
+  verbatim: empty or unbounded names, negative or hour-long beacon intervals, nonsensical
+  jitter and unknown transports all became permanent rows the new console would dutifully
+  render. Creation now enforces `name` 1–64 (trimmed), `beacon_interval` 1–3600 s, `jitter`
+  0–0.95, and a transport allowlist (`dns/http/tcp/tls/webrtc/ws`); 0-values keep their
+  documented defaults (5 s / 0.3 / tls). Mirrored by a client-side check in the new view.
+
+### Documentation (Pulimiento)
+
+- README: new "Agent profiles" feature row; the Known-gaps bullet that still listed
+  refresh-token rotation as open now credits round 10 (and this round's shim removal) —
+  anti-replay by envelope sequence remains the only open protocol item.
+- DEVELOPER_GUIDE: `/api/profiles` documents the validation contract and the new
+  `DELETE /api/profiles/:id` row.
+- gofmt normalization across the touched Go files; zero new dependencies (`go.mod` and
+  `web/package.json` untouched).
+
+### Tests
+
+- `internal/auth`: `TestRotationRejectsLegacyNoJtiTokens` (legacy no-jti token denied by
+  rotation — twice — and by `ValidateRefreshToken`).
+- `internal/handlers` (new suite `profiles_test.go`): `TestProfilesCreateValidation`
+  (defaults + 8 rejection cases) and `TestProfilesLifecycle` (create → listed → deleted →
+  404 on re-delete → 400 on control-char id).
+
 ## v1.12.0 — Round 11: fail-fast config validation, loot column sorting (2026-09-14)
 
 Eleventh maintenance round executed by the four-agent flow (Director → Implementaciones →

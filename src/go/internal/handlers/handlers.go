@@ -4,10 +4,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"mime"
@@ -672,6 +674,13 @@ func (r *Router) handleLock(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// profileTransports is the allowlist of transport names a profile may pin.
+// It mirrors the listener names the server actually admits (plus the tls
+// alias used by the agent chain); anything else used to be stored verbatim.
+var profileTransports = map[string]bool{
+	"tls": true, "http": true, "dns": true, "webrtc": true, "ws": true, "tcp": true,
+}
+
 // handleProfiles manages agent configuration profiles.
 func (r *Router) handleProfiles(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "POST" {
@@ -685,16 +694,37 @@ func (r *Router) handleProfiles(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "invalid JSON", 400)
 			return
 		}
-		id := fmt.Sprintf("profile-%x", time.Now().UnixNano())
+		// Input validation (round 12): the endpoint used to store anything
+		// verbatim — empty names, negative intervals, nonsensical jitter
+		// and unknown transports ended up as permanent garbage rows the
+		// new Profiles console would dutifully render.
+		profReq.Name = strings.TrimSpace(profReq.Name)
+		if profReq.Name == "" || len(profReq.Name) > 64 {
+			http.Error(w, `{"error":"name is required (1-64 characters)"}`, 400)
+			return
+		}
 		if profReq.BeaconInterval == 0 {
 			profReq.BeaconInterval = 5
+		}
+		if profReq.BeaconInterval < 1 || profReq.BeaconInterval > 3600 {
+			http.Error(w, `{"error":"beacon_interval must be between 1 and 3600 seconds"}`, 400)
+			return
 		}
 		if profReq.Jitter == 0 {
 			profReq.Jitter = 0.3
 		}
+		if profReq.Jitter < 0 || profReq.Jitter > 0.95 {
+			http.Error(w, `{"error":"jitter must be between 0 and 0.95"}`, 400)
+			return
+		}
 		if profReq.Transport == "" {
 			profReq.Transport = "tls"
 		}
+		if !profileTransports[profReq.Transport] {
+			http.Error(w, `{"error":"unknown transport (allowed: dns, http, tcp, tls, webrtc, ws)"}`, 400)
+			return
+		}
+		id := fmt.Sprintf("profile-%x", time.Now().UnixNano())
 		r.server.DB().CreateAgentProfile(id, profReq.Name, profReq.BeaconInterval, profReq.Jitter, profReq.Transport)
 		json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "created"})
 		return
@@ -705,6 +735,31 @@ func (r *Router) handleProfiles(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(profiles)
+}
+
+// handleProfileDelete removes an agent configuration profile by id. Writes
+// are gated by collab:write at the route level (same as profile creation).
+// Deleting a missing id is a 404, not a silent no-op: the console distinguishes
+// "already gone" from "gone now".
+func (r *Router) handleProfileDelete(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "DELETE" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	id := req.URL.Path[len("/api/profiles/"):]
+	if id == "" || strings.ContainsFunc(id, func(rr rune) bool { return rr < 0x20 || rr == 0x7f }) {
+		http.Error(w, "invalid profile id", 400)
+		return
+	}
+	if err := r.server.DB().DeleteAgentProfile(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "profile not found", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": id})
 }
 
 // handleReport generates engagement reports.

@@ -66,16 +66,22 @@
                 @change="toggleAll"
               />
             </th>
-            <th class="sortable" @click="setSort('filename')">
-              Filename <span class="sort-ind">{{ sortIndicator('filename') }}</span>
+            <th class="sortable" :aria-sort="ariaSort('filename')">
+              <button type="button" class="th-btn" @click="setSort('filename')">
+                Filename <span class="sort-ind" aria-hidden="true">{{ sortIndicator('filename') }}</span>
+              </button>
             </th>
             <th>Session</th>
             <th>Module</th>
-            <th class="sortable" @click="setSort('size')">
-              Size <span class="sort-ind">{{ sortIndicator('size') }}</span>
+            <th class="sortable" :aria-sort="ariaSort('size')">
+              <button type="button" class="th-btn" @click="setSort('size')">
+                Size <span class="sort-ind" aria-hidden="true">{{ sortIndicator('size') }}</span>
+              </button>
             </th>
-            <th class="sortable" @click="setSort('created')">
-              Captured <span class="sort-ind">{{ sortIndicator('created') }}</span>
+            <th class="sortable" :aria-sort="ariaSort('created')">
+              <button type="button" class="th-btn" @click="setSort('created')">
+                Captured <span class="sort-ind" aria-hidden="true">{{ sortIndicator('created') }}</span>
+              </button>
             </th>
             <th style="width: 88px" />
           </tr>
@@ -276,6 +282,10 @@ export default {
         this.sortDir = key === 'created' ? -1 : 1
       }
     },
+    ariaSort(key) {
+      if (this.sortKey !== key) return 'none'
+      return this.sortDir === 1 ? 'ascending' : 'descending'
+    },
     sortIndicator(key) {
       if (this.sortKey !== key) return ''
       return this.sortDir === 1 ? '↑' : '↓'
@@ -361,6 +371,22 @@ export default {
 }
 .sortable:hover {
   color: var(--text);
+}
+.th-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.th-btn:focus-visible {
+  outline: 2px solid var(--accent, #6b8afd);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 .sort-ind {
   color: var(--faint);
