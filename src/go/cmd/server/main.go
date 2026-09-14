@@ -127,7 +127,7 @@ func main() {
 	}
 
 	// Wire up REST API handlers (separate package to avoid circular imports)
-	router := handlers.NewRouter(server, cfg.Server.TrustedProxies)
+	router := handlers.NewRouter(server, cfg.Server.TrustedProxies, cfg.API.AllowedOrigins)
 	server.SetAPIMux(router.Setup())
 
 	if err := server.Start(); err != nil {

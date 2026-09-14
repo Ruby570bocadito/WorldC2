@@ -165,6 +165,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | POST | `/api/vault` | Yes | Store credential |
 | GET | `/api/files` | Yes | List files (current run + persisted `file_records` rows from previous runs) |
 | POST | `/api/files` | Yes | Upload file |
+| DELETE | `/api/files` | Yes | Purge ALL loot — blobs on disk, current listing and persisted rows (`files:delete`, same capability as the single-file route) |
 | GET | `/api/modules` | Yes | List modules |
 | POST | `/api/modules` | Yes | Register module |
 | POST | `/api/modules/push` | Yes | Push to agent |

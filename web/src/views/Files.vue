@@ -5,7 +5,20 @@
         <h1 class="page-title">Files</h1>
         <p class="page-sub">Exfiltrated artifacts</p>
       </div>
-      <span v-if="files.length" class="badge">{{ files.length }} files</span>
+      <div class="head-actions">
+        <span v-if="files.length" class="badge">{{ files.length }} files</span>
+        <button
+          v-if="files.length"
+          class="btn btn-danger"
+          type="button"
+          :disabled="purgingAll"
+          @click="purgeAll"
+        >
+          <span v-if="purgingAll" class="spinner" />
+          <IconTrash v-else :size="14" />
+          Purge all
+        </button>
+      </div>
     </div>
 
     <div class="table-wrap">
@@ -83,6 +96,7 @@ export default {
       loading: true,
       downloading: null,
       deleting: null,
+      purgingAll: false,
       timer: null,
     }
   },
@@ -136,12 +150,36 @@ export default {
         this.deleting = null
       }
     },
+    async purgeAll() {
+      const n = this.files.length
+      const ok = window.confirm(
+        'Purge ALL ' + n + ' file(s)? Artifacts on disk and their records are removed permanently.'
+      )
+      if (!ok) return
+      this.purgingAll = true
+      try {
+        // DELETE /api/files (Bearer auth via api layer) — bulk wipe server-side
+        const res = await api.del('/api/files')
+        const count = res && typeof res.purged === 'number' ? res.purged : n
+        notify.ok('Purged ' + count + ' file(s)')
+        this.fetchFiles()
+      } catch (e) {
+        if (!e.expired) notify.error('Bulk purge failed: ' + e.message)
+      } finally {
+        this.purgingAll = null
+      }
+    },
   },
 }
 </script>
 
 <style scoped>
 .fw { font-weight: 600; }
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .loading-row {
   display: flex;
   align-items: center;

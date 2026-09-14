@@ -429,6 +429,25 @@ func (f *FileManager) removeMemory(id string) {
 	}
 }
 
+// PurgeAll removes every loot record and its blob: the in-memory listing of
+// the current run and the persisted rows of previous runs. It reuses Delete
+// per record so each removal keeps the same containment guards (tampered or
+// foreign paths only drop records, never the referenced file) and the same
+// strict DB semantics. Returns the number of records purged; the first hard
+// error (e.g. a blob the OS refuses to remove) aborts the sweep so the
+// operator learns about it instead of silently losing loot view consistency.
+func (f *FileManager) PurgeAll() (int, error) {
+	records := f.List()
+	purged := 0
+	for _, rec := range records {
+		if err := f.Delete(rec.ID); err != nil {
+			return purged, fmt.Errorf("purge %s: %w", rec.ID, err)
+		}
+		purged++
+	}
+	return purged, nil
+}
+
 // removeDB drops the persisted row; a missing row counts as success.
 func (f *FileManager) removeDB(id string) error {
 	if f.db == nil {

@@ -31,15 +31,21 @@
       <div class="fleet-body">
         <div v-for="g in fleetRows" :key="g.label" class="fleet-group">
           <span class="fleet-label">{{ g.label }}</span>
-          <span
+          <button
             v-for="row in g.rows"
             :key="g.label + row.name"
             class="fleet-chip mono"
             :class="{ 'is-outdated': row.outdated }"
-            :title="row.outdated ? row.count + ' agent(s) behind the most common version' : row.count + ' agent(s)'"
+            type="button"
+            :title="
+              (row.outdated
+                ? row.count + ' agent(s) behind the most common version'
+                : row.count + ' agent(s)') + ' — click to filter Sessions'
+            "
+            @click="openFiltered(g.label, row.name)"
           >
             {{ row.name }} · {{ row.count }}
-          </span>
+          </button>
         </div>
       </div>
     </div>
@@ -251,6 +257,13 @@ export default {
   methods: {
     fmtAgo,
     shortId,
+    openFiltered(group, name) {
+      // Transport chips deep-link into Sessions with the transport filter
+      // pre-applied (Sessions reads ?transport=). Version chips stay
+      // informational — the sessions view has no version select yet.
+      if (group !== 'Transports') return
+      this.$router.push({ path: '/sessions', query: { transport: name } })
+    },
     async refresh() {
       const [sessRes, vaultRes, modRes] = await Promise.allSettled([
         api.get('/api/sessions'),
@@ -471,12 +484,19 @@ export default {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font: inherit;
   font-size: 12px;
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
   padding: 3px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.fleet-chip:hover {
+  border-color: var(--border, #2E3140);
+  background: var(--surface-3, #1D202B);
 }
 .fleet-chip.is-outdated {
   color: var(--warning, #e5b348);

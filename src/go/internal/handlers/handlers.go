@@ -45,7 +45,10 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 
 	operator, err := r.server.DB().AuthenticateOperator(loginReq.Username, loginReq.Password)
 	if err != nil {
-		r.server.DB().LogAction(0, "auth_failed", req.RemoteAddr)
+		// Audit the resolved client IP (trusted-proxy aware), not the
+		// raw RemoteAddr — behind a reverse proxy the raw address
+		// would blame the proxy for every failed attempt.
+		r.server.DB().LogAction(0, "auth_failed", r.rateLimiter.ResolveClientIP(req))
 		http.Error(w, `{"error":"invalid credentials"}`, 401)
 		return
 	}
@@ -70,7 +73,7 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		Data: map[string]interface{}{
 			"username": operator.Username,
 			"role":     operator.Role,
-			"remote":   req.RemoteAddr,
+			"remote":   r.rateLimiter.ResolveClientIP(req),
 		},
 	})
 
@@ -400,6 +403,22 @@ func (r *Router) handleVault(w http.ResponseWriter, req *http.Request) {
 
 // handleFiles manages exfiltrated files.
 func (r *Router) handleFiles(w http.ResponseWriter, req *http.Request) {
+	// Bulk purge: DELETE /api/files removes every loot record and blob
+	// (current run + persisted rows). The per-id route keeps handling
+	// single-file purges; this is the "wipe the board" action and requires
+	// the same files:delete capability.
+	if req.Method == "DELETE" {
+		purged, err := r.server.Files().PurgeAll()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "purged",
+			"purged": purged,
+		})
+		return
+	}
 	if req.Method == "POST" {
 		var fileReq struct {
 			SessionID string `json:"session_id"`

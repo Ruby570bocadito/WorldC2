@@ -256,8 +256,17 @@ export default {
     },
   },
   mounted() {
+    this.applyQueryTransport()
     this.fetchSessions()
     this.timer = setInterval(() => this.fetchSessions(), 5000)
+  },
+  watch: {
+    // Deep-link support: the dashboard fleet chips push /sessions?transport=x.
+    // Watching the query keeps the filter in sync even when the navigation
+    // lands on an already-mounted instance of this view.
+    '$route.query.transport'() {
+      this.applyQueryTransport()
+    },
   },
   beforeUnmount() {
     if (this.timer) clearInterval(this.timer)
@@ -267,6 +276,12 @@ export default {
     fmtDate,
     shortId,
     ipOf,
+    applyQueryTransport() {
+      const t = this.$route.query.transport
+      if (typeof t === 'string' && t) {
+        this.transportFilter = t
+      }
+    },
     async fetchSessions() {
       try {
         const data = await api.get('/api/sessions')

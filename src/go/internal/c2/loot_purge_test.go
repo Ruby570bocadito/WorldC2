@@ -112,6 +112,71 @@ func TestFileManagerDeletePurgesEverywhere(t *testing.T) {
 	}
 }
 
+// TestFileManagerPurgeAllSweepsEverywhere covers the bulk purge: records from
+// the current run AND persisted rows from previous runs (which List fuses)
+// all disappear — blobs on disk, in-memory listing and file_records rows.
+func TestFileManagerPurgeAllSweepsEverywhere(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "purgeall.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	if err := database.UpsertSession(&db.SessionRecord{ID: "sess-all", State: "active"}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	dir := t.TempDir()
+	fm := NewFileManager(dir)
+	fm.SetDB(database)
+
+	// Two blobs from this run...
+	r1, err := fm.Store("sess-all", "one.txt", "credentials", []byte("ONE"))
+	if err != nil {
+		t.Fatalf("store 1: %v", err)
+	}
+	r2, err := fm.Store("sess-all", "two.txt", "screenshots", []byte("TWO"))
+	if err != nil {
+		t.Fatalf("store 2: %v", err)
+	}
+	// ...and one row simulating a previous run (only in file_records).
+	legacy := &db.FileRecord{
+		ID: "file-legacy", SessionID: "sess-all", Filename: "legacy.txt",
+		Module: "credentials", Size: 6, Path: filepath.Join(dir, "legacy.txt"),
+	}
+	if err := database.InsertFileRecord(legacy); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if len(fm.List()) != 3 {
+		t.Fatalf("precondition: listing should fuse 3 records, got %d", len(fm.List()))
+	}
+
+	purged, err := fm.PurgeAll()
+	if err != nil {
+		t.Fatalf("purge all: %v", err)
+	}
+	if purged != 3 {
+		t.Fatalf("purged %d records, want 3", purged)
+	}
+
+	if len(fm.List()) != 0 {
+		t.Fatalf("listing still holds %d records after PurgeAll", len(fm.List()))
+	}
+	for _, rec := range []*FileRecord{r1, r2} {
+		if _, err := os.Stat(rec.Path); !os.IsNotExist(err) {
+			t.Fatalf("blob survived on disk: %s (%v)", rec.Path, err)
+		}
+	}
+	if persisted, err := database.ListFileRecords(); err != nil || len(persisted) != 0 {
+		t.Fatalf("persisted rows survived: %v (n=%d)", err, len(persisted))
+	}
+
+	// Idempotent: a second sweep on an empty board purges nothing, no error.
+	if n, err := fm.PurgeAll(); err != nil || n != 0 {
+		t.Fatalf("second purge: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
 // TestFileManagerDeleteForeignPathKeepsBlob verifies the containment guard:
 // when a record's stored path escapes the loot base dir (tampered row), the
 // records are dropped but the foreign file is never touched.

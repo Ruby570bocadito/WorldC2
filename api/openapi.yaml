@@ -450,6 +450,38 @@ paths:
       responses:
         '200':
           description: File stored
+    delete:
+      summary: Purge all captured files (files:delete required)
+      description: >-
+        Bulk wipe: removes every exfiltrated artifact everywhere it lives —
+        blobs on disk, the current-run listing and the persisted file_records
+        rows of previous runs. Requires the files:delete permission (the same
+        capability the single-file route enforces, so no role gains a bulk
+        action its single-file route lacked). Returns the number of records
+        purged; the first hard error aborts the sweep.
+      tags: [Files]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: All loot purged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: purged
+                  purged:
+                    type: integer
+                    description: Number of records removed
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Insufficient permissions (files:delete required)
+        '500':
+          description: A blob refused to be removed; the sweep aborted
 
   /api/files/{id}:
     delete:

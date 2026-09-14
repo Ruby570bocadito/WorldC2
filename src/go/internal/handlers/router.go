@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -18,12 +17,18 @@ type Router struct {
 	// global limiter allows 60 req/min shared with the whole API, which is
 	// far too permissive for password guessing against a single endpoint.
 	loginLimiter *c2.RateLimiter
+	// allowedOrigins is the exact-match CORS allowlist (config
+	// api.allowed_origins). Empty (the default) means no cross-origin
+	// browser access: the bundled console is same-origin and needs none.
+	allowedOrigins map[string]bool
 }
 
 // NewRouter creates a new router with middleware. trustedProxies lists the
 // IPs/CIDRs of reverse proxies in front of the API (used to resolve real
 // client IPs for rate limiting); empty means "no proxy, trust the socket".
-func NewRouter(server *c2.Server, trustedProxies []string) *Router {
+// allowedOrigins is the CORS allowlist; a "*" entry panics — wildcard CORS
+// would let any web page read the C2 API from a victim's browser.
+func NewRouter(server *c2.Server, trustedProxies []string, allowedOrigins []string) *Router {
 	rateLimiter := c2.NewRateLimiter(60, time.Minute)
 	if err := rateLimiter.SetTrustedProxies(trustedProxies); err != nil {
 		// NewRouter cannot return an error without breaking the wiring, but
@@ -32,10 +37,30 @@ func NewRouter(server *c2.Server, trustedProxies []string) *Router {
 		panic(fmt.Sprintf("trusted_proxies: %v", err))
 	}
 	return &Router{
-		server:       server,
-		rateLimiter:  rateLimiter,
-		loginLimiter: c2.NewRateLimiter(10, time.Minute),
+		server:         server,
+		rateLimiter:    rateLimiter,
+		loginLimiter:   c2.NewRateLimiter(10, time.Minute),
+		allowedOrigins: parseAllowedOrigins(allowedOrigins),
 	}
+}
+
+// parseAllowedOrigins builds the exact-match CORS allowlist. Blank and
+// trailing-slash variants are normalized; a wildcard entry panics — a C2
+// must never hand out wildcard CORS, and failing fast beats a silently
+// permissive deployment. Exported behavior is testable without a server.
+func parseAllowedOrigins(entries []string) map[string]bool {
+	origins := make(map[string]bool, len(entries))
+	for _, o := range entries {
+		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		if o == "" {
+			continue
+		}
+		if strings.Contains(o, "*") {
+			panic(fmt.Sprintf("api.allowed_origins: wildcard %q rejected — list exact origins only", o))
+		}
+		origins[o] = true
+	}
+	return origins
 }
 
 // Setup configures all API routes and returns the mux.
@@ -90,7 +115,7 @@ func (r *Router) Setup() *http.ServeMux {
 	// Infrastructure
 	mux.HandleFunc("/api/socks", cors(auth(audit(rate(perm("socks:start")(r.handleSOCKS))))))
 	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.permByMethod("vault:read", "vault:create")(r.handleVault))))))
-	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.permByMethod("files:download", "files:upload")(r.handleFiles))))))
+	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.filesPerm(r.handleFiles))))))
 	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(perm("files:download")(r.handleFileDownload))))))
 	mux.HandleFunc("/api/files/", cors(auth(audit(rate(perm("files:delete")(r.handleFileDelete))))))
 	mux.HandleFunc("/api/portfwd", cors(auth(audit(rate(perm("portfwd:start")(r.handlePortFwd))))))
@@ -130,15 +155,12 @@ func (r *Router) corsMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("Content-Security-Policy", "default-src 'self'")
 
 			origin := req.Header.Get("Origin")
-			if origin != "" {
-				allowed := map[string]bool{
-					"http://localhost:9090": true,
-					"http://127.0.0.1:9090": true,
-					"http://localhost:5173": true,
-				}
-				if allowed[origin] {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-				}
+			if origin != "" && r.allowedOrigins[origin] {
+				// Exact-match allowlist from api.allowed_origins.
+				// Empty list (default) = no CORS headers at all:
+				// the bundled console is same-origin.
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -174,7 +196,10 @@ func (r *Router) authMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 
 			username, role, err := r.server.TokenManager().ValidateToken(token)
 			if err != nil {
-				r.server.DB().LogAction(0, "auth_failed", req.RemoteAddr)
+				// Resolved client IP (trusted-proxy aware): behind a
+				// proxy the raw RemoteAddr would log the proxy for
+				// every invalid-token attempt.
+				r.server.DB().LogAction(0, "auth_failed", r.rateLimiter.ResolveClientIP(req))
 				http.Error(w, `{"error":"invalid or expired token"}`, 401)
 				return
 			}
@@ -214,16 +239,32 @@ func (r *Router) auditMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 				req.Body = http.MaxBytesReader(w, req.Body, limit)
 			}
 
-			ip, _, _ := net.SplitHostPort(req.RemoteAddr)
-			if ip == "" {
-				ip = req.RemoteAddr
-			}
+			ip := r.rateLimiter.ResolveClientIP(req)
 			user := req.Header.Get("X-Auth-User")
 			if user == "" {
 				user = "anonymous"
 			}
 			r.server.DB().LogAction(0, "api_call", req.Method+" "+req.URL.Path+" from "+ip+" by "+user)
 			next(w, req)
+		}
+	}
+}
+
+// filesPerm selects the permission per method on /api/files: GET lists loot
+// (files:download), POST stores artifacts (files:upload) and DELETE purges
+// the whole listing (files:delete — the same capability the per-id route
+// enforces, so no role gains a bulk action its single-file route lacked).
+func (r *Router) filesPerm(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			r.requirePermission("files:download")(next)(w, req)
+		case http.MethodPost:
+			r.requirePermission("files:upload")(next)(w, req)
+		case http.MethodDelete:
+			r.requirePermission("files:delete")(next)(w, req)
+		default:
+			http.Error(w, "method not allowed", 405)
 		}
 	}
 }

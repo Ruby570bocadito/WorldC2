@@ -114,6 +114,16 @@ func (rl *RateLimiter) clientIP(r *http.Request) string {
 	return peer
 }
 
+// ResolveClientIP returns the client identity used for rate limiting and
+// audit logging: the socket peer unless the peer is a trusted proxy, in
+// which case the X-Forwarded-For chain is walked right-to-left. Exported so
+// audit trails (login failures, API calls) and rate-limit buckets can never
+// disagree about who the client is — without this, deployments behind a
+// proxy record the proxy IP in every auth_failed entry.
+func (rl *RateLimiter) ResolveClientIP(r *http.Request) string {
+	return rl.clientIP(r)
+}
+
 // Allow checks if a request from the given IP is allowed.
 func (rl *RateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()

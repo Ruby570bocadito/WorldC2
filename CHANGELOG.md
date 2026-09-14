@@ -1,5 +1,42 @@
 # WorldC2 — Changelog
 
+## v1.8.0 — Round 7: bulk loot purge, fleet deep-links, configurable CORS, proxy-aware audit logs (2026-09-14)
+
+Seventh maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Bulk loot purge** — `DELETE /api/files` wipes every exfiltrated artifact everywhere
+  it lives: blobs on disk, the current-run listing and the persisted `file_records` rows
+  of previous runs. `FileManager.PurgeAll` reuses the per-record `Delete` path, so the
+  containment guards (tampered/foreign paths only drop records, never the referenced
+  file) and the strict DB semantics carry over. The console Files view gains a "Purge
+  all" button (design-system `.btn-danger`, confirm-guarded, reports the purged count).
+  Gated by `files:delete` — the same capability the single-file route enforces, via the
+  new method-aware `filesPerm` middleware on `/api/files` (GET→files:download,
+  POST→files:upload, DELETE→files:delete).
+- **Fleet chips deep-link into Sessions** — clicking a transport chip in the dashboard
+  "Implant fleet" panel navigates to `/sessions?transport=<name>`, with the Sessions
+  view applying the filter from the query param on mount and on subsequent navigations
+  (`watch` on `$route.query.transport`). Version chips stay informational.
+
+### Changed (Bugs/Seguridad)
+
+- **CORS allowlist is now configuration, not code** — the hardcoded dev origins
+  (`localhost:9090/5173`, `127.0.0.1:9090`) are gone from the binary; the allowlist
+  comes from `api.allowed_origins` in `config.yaml`. Empty (the default) means no
+  cross-origin browser access at all — the bundled console is same-origin and needs
+  none. Wildcard entries are rejected at startup (fail-fast panic, mirroring the
+  trusted-proxies behavior); matched responses now also carry `Vary: Origin`.
+  Documented in `config.example.yaml`.
+- **Audit logs are trusted-proxy aware** — `auth_failed`, `auth_success` (SIEM
+  `operator_login.remote`) and the per-request `api_call` entries used the raw
+  `RemoteAddr`; behind a reverse proxy every failed attempt was blamed on the proxy IP.
+  All three now go through `RateLimiter.ResolveClientIP`, the exact resolution the rate
+  limiter uses for its buckets, so audit trail and rate limiting can never disagree
+  about who the client is.
+
 ## v1.7.0 — Round 6: public health hardened, authenticated status endpoint, implant fleet view (2026-09-15)
 
 Sixth maintenance round executed by the four-agent flow (Director → Implementaciones →

@@ -43,6 +43,13 @@ type ServerConfig struct {
 // APIConfig holds REST API configuration.
 type APIConfig struct {
 	Port uint16 `yaml:"port"`
+	// AllowedOrigins lists the exact origins (scheme://host[:port]) allowed
+	// to call the API from another origin via CORS. The bundled console is
+	// served same-origin and needs no entry; this list exists for external
+	// tooling or a separately hosted console in development. Empty (default)
+	// means no cross-origin browser access at all. A "*" entry is rejected
+	// at startup — a C2 must never hand out wildcard CORS.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 // DatabaseConfig holds database connection info.

@@ -125,3 +125,19 @@ func TestSetTrustedProxiesValidation(t *testing.T) {
 		t.Fatalf("valid entries rejected: %v", err)
 	}
 }
+
+// TestResolveClientIPForAudit pins the exported audit-log resolution: the
+// socket peer by default, the forwarded client behind a trusted proxy. This
+// is the method auth_failed / api_call audit entries use, so a proxy
+// deployment no longer blames the proxy IP for every failed attempt.
+func TestResolveClientIPForAudit(t *testing.T) {
+	rl := newTestLimiter(t, nil)
+	if got := rl.ResolveClientIP(request("198.51.100.7:9999", "")); got != "198.51.100.7" {
+		t.Fatalf("no-proxy resolution = %q, want socket peer", got)
+	}
+
+	rlp := newTestLimiter(t, []string{"127.0.0.1"})
+	if got := rlp.ResolveClientIP(request("127.0.0.1:5555", "203.0.113.9")); got != "203.0.113.9" {
+		t.Fatalf("proxy resolution = %q, want forwarded client", got)
+	}
+}
