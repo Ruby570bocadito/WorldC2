@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2/session"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/db"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/proto"
 )
 
@@ -22,6 +23,15 @@ func (s *Server) CreateTaskWithContext(ctx context.Context, agentID, command str
 
 	taskID := generateTaskID()
 	task := &proto.Task{TaskId: taskID, Command: command, TimeoutSec: timeoutSec}
+
+	// Persist and audit the task exactly like CreateTask does. Without this,
+	// commands issued through /api/cmd and /api/broadcast (the operator
+	// console's main flow) never landed in the tasks table nor in the audit
+	// log, and the trailing UpdateTaskResult updated a row that never existed.
+	s.db.InsertTask(&db.TaskRecord{
+		ID: taskID, SessionID: sess.ID, Command: command, IssuedAt: time.Now(),
+	})
+	s.db.LogAction(0, "task", fmt.Sprintf("%s: %s", sess.Hostname, command))
 
 	resultCh := sess.RegisterPendingTask(taskID)
 	if err := sess.SendEnvelope(proto.EnvelopeType_ENVELOPE_TYPE_TASK, task); err != nil {

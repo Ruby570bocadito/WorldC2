@@ -474,6 +474,3 @@ func (a *WSAgent) Close() error {
 	}
 	return nil
 }
-
-// Ensure imports used
-var _ = log.Default

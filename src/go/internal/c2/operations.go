@@ -1,7 +1,6 @@
 package c2
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/db"
@@ -355,7 +355,10 @@ type PortForward struct {
 	RemotePort int
 	SessionID  string
 	listener   net.Listener
-	running    bool
+	// running is read by the accept-loop goroutine and written by Stop(),
+	// potentially from a different goroutine than the accept-loop — hence
+	// the atomic. A plain bool raced (go test -race) between the two.
+	running atomic.Bool
 }
 
 // NewPortFwdManager creates a new port forwarding manager.
@@ -386,18 +389,22 @@ func (m *PortFwdManager) Start(sessionID string, localPort int, remoteHost strin
 	}
 
 	fwd.listener = listener
-	fwd.running = true
+	fwd.running.Store(true)
 	m.forwards[id] = fwd
 
 	target := fmt.Sprintf("%s:%d", remoteHost, remotePort)
 
 	go func() {
-		for fwd.running {
+		for fwd.running.Load() {
 			conn, err := listener.Accept()
 			if err != nil {
-				if !fwd.running {
+				if !fwd.running.Load() {
 					return
 				}
+				// Transient accept error while still running:
+				// back off instead of spinning the CPU, and
+				// re-check running afterwards.
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
@@ -434,7 +441,7 @@ func (m *PortFwdManager) Stop(id string) error {
 		return fmt.Errorf("forward not found: %s", id)
 	}
 
-	fwd.running = false
+	fwd.running.Store(false)
 	fwd.listener.Close()
 	delete(m.forwards, id)
 	return nil
@@ -447,10 +454,16 @@ func (m *PortFwdManager) List() []PortForward {
 
 	result := make([]PortForward, 0, len(m.forwards))
 	for _, fwd := range m.forwards {
-		result = append(result, *fwd)
+		// Copy only the data fields: PortForward now embeds an
+		// atomic.Bool (noCopy) and a listener that must not be
+		// shallow-copied into the snapshot.
+		result = append(result, PortForward{
+			ID:         fwd.ID,
+			LocalPort:  fwd.LocalPort,
+			RemoteHost: fwd.RemoteHost,
+			RemotePort: fwd.RemotePort,
+			SessionID:  fwd.SessionID,
+		})
 	}
 	return result
 }
-
-// --- Ensure json imported ---
-var _ = json.Marshal

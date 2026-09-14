@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -361,6 +360,3 @@ func (pm *PersistenceManager) removeWindows(name string) error {
 
 	return nil
 }
-
-// Ensure json imported
-var _ = json.Marshal

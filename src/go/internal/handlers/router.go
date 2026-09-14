@@ -13,13 +13,18 @@ import (
 type Router struct {
 	server      *c2.Server
 	rateLimiter *c2.RateLimiter
+	// loginLimiter is a tighter, dedicated bucket for /api/login: the
+	// global limiter allows 60 req/min shared with the whole API, which is
+	// far too permissive for password guessing against a single endpoint.
+	loginLimiter *c2.RateLimiter
 }
 
 // NewRouter creates a new router with middleware.
 func NewRouter(server *c2.Server) *Router {
 	return &Router{
-		server:      server,
-		rateLimiter: c2.NewRateLimiter(60, time.Minute),
+		server:       server,
+		rateLimiter:  c2.NewRateLimiter(60, time.Minute),
+		loginLimiter: c2.NewRateLimiter(10, time.Minute),
 	}
 }
 
@@ -47,10 +52,11 @@ func (r *Router) Setup() *http.ServeMux {
 	admin := r.adminMiddleware()
 	audit := r.auditMiddleware()
 	rate := c2.RateLimitMiddleware(r.rateLimiter)
+	loginLimit := c2.RateLimitMiddleware(r.loginLimiter)
 	perm := r.requirePermission
 
 	// Public endpoints
-	mux.HandleFunc("/api/login", cors(audit(rate(r.handleLogin))))
+	mux.HandleFunc("/api/login", cors(audit(rate(loginLimit(r.handleLogin)))))
 	mux.HandleFunc("/api/refresh", cors(audit(rate(r.handleRefresh))))
 	mux.HandleFunc("/api/health", cors(audit(rate(r.handleHealth))))
 

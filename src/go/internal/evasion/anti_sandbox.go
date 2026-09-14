@@ -247,6 +247,3 @@ func SleepWithJitter(min, max time.Duration) {
 	sleepTime := min + time.Duration(randVal.Int64())
 	time.Sleep(sleepTime)
 }
-
-// Ensure imports are used
-var _ = exec.Command

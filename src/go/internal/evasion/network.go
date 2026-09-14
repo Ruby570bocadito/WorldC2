@@ -8,7 +8,6 @@ import (
 	"net"
 	"os/exec"
 	"time"
-	"unsafe"
 
 	"crypto/tls"
 )
@@ -210,7 +209,3 @@ func minInt(a, b int) int {
 	}
 	return b
 }
-
-// Ensure imports are used
-var _ = unsafe.Pointer(nil)
-var _ = time.Second

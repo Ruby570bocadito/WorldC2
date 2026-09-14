@@ -346,6 +346,3 @@ func (a *HTTPAgent) Send(data []byte) ([]byte, error) {
 func (a *HTTPAgent) SessionID() string {
 	return a.sessionID
 }
-
-// Ensure imports used
-var _ = bytes.MinRead

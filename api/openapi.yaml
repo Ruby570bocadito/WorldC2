@@ -622,7 +622,7 @@ paths:
                   description: Plain password; stored as bcrypt hash
                 role:
                   type: string
-                  enum: [admin, operator, viewer]
+                  enum: [admin, operator, viewer, auditor]
       responses:
         '200':
           description: Operator created

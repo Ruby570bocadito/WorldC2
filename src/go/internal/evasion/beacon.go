@@ -189,6 +189,3 @@ func SecureFree(addr uintptr, size int) {
 	virtualFree := kernel32.NewProc("VirtualFree")
 	virtualFree.Call(addr, 0, 0x8000) // MEM_RELEASE
 }
-
-// Ensure imports are used
-var _ = time.Second

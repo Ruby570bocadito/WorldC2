@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -927,6 +926,3 @@ func evasionRun(args string) string {
   evasion:beacon    — Beacon optimization`
 	}
 }
-
-// Ensure log imported
-var _ = log.Printf

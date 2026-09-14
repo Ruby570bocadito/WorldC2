@@ -32,7 +32,7 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | Feature | Status | Notes |
 |---------|--------|-------|
 | 🔐 Encrypted C2 channel | ✅ Working | X25519 key exchange + XChaCha20-Poly1305 (AEAD) per session |
-| 📡 Multi-transport listeners | ✅ Working | TCP+TLS, HTTP long-poll, WebSocket |
+| 📡 Multi-transport listeners | ✅ Working | TCP+TLS, WebSocket (+ WebRTC and DNS fallbacks); the HTTP long-poll listener is experimental — not agent-reachable yet |
 | 🖥️ Operator web console | ✅ Working | Vue 3 + Vite, dark minimalist UI, live polling |
 | 🧩 REST API + JWT auth | ✅ Working | Access + refresh tokens (`token_use` claims), bcrypt operators |
 | 👥 RBAC | ✅ Working | `admin` / `operator` / `viewer` / `auditor` roles, per-endpoint permissions |
@@ -48,6 +48,12 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
+>
+> **Known gaps (round 1 audit):** the HTTP long-poll listener (`transport/http.go`) is
+> experimental: the agent fallback chain does not speak its protocol yet, so agents cannot
+> connect through it — use TLS, WebSocket, WebRTC or DNS. The agent also **auto-installs
+> persistence** on first run (cron/bashrc, registry/schtasks, LaunchAgent depending on OS);
+> in authorized labs run it with `-no-persist` to disable that behavior.
 
 ---
 
@@ -129,6 +135,8 @@ docker compose up --build      # or: docker build -t worldc2-server .
 cd src/go
 go build -o ../../dist/worldc2-agent ./cmd/agent
 ./dist/worldc2-agent --server 127.0.0.1:8443
+# For authorized labs, disable first-run auto-persistence:
+./dist/worldc2-agent --server 127.0.0.1:8443 -no-persist
 ```
 
 ---
@@ -182,6 +190,9 @@ WorldC2/
 - Every API request is rate-limited, size-limited and audited; refresh tokens cannot be used as
   access tokens.
 - Sensitive vault columns can be encrypted at rest with AES-256-GCM by setting `WORLDC2_MASTER_KEY`.
+- The agent installs OS persistence on first run by default (cron + bashrc on Linux, registry
+  + scheduled task on Windows, LaunchAgent on macOS). Pass `-no-persist` to disable it —
+  recommended for lab benches, CI and demos.
 - Module manifests are HMAC-signed when registered through the API and re-verified before every
   push — tampered manifests are rejected at load and pack time; module paths are sanitized against
   traversal.

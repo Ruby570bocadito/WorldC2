@@ -76,6 +76,17 @@ type Server struct {
 
 	quit chan struct{}
 	wg   sync.WaitGroup
+	// acceptWG tracks the per-listener accept-loop goroutines only. Stop()
+	// waits for it BEFORE waiting on wg: that guarantees no accept-loop is
+	// still alive (and thus able to call wg.Add(1) for a freshly accepted
+	// connection) while wg.Wait() runs — the old ordering could panic with
+	// "sync: WaitGroup misuse: Add called concurrently with Wait".
+	acceptWG sync.WaitGroup
+
+	// admitMu serializes session admission: the max_sessions count and the
+	// sessions.Store happen under one critical section, so N simultaneous
+	// connections cannot all slip past the cap (TOCTOU).
+	admitMu sync.Mutex
 
 	// startTime records when the server was created (for uptime reporting).
 	startTime time.Time
@@ -332,7 +343,7 @@ func (s *Server) Start() error {
 		}
 		log.Printf("[TCP+TLS] Listening on %s", tcpAddr)
 		s.listeners = append(s.listeners, tcpListener)
-		s.wg.Add(1)
+		s.acceptWG.Add(1)
 		go s.acceptLoop(tcpListener, "tcp")
 	} else {
 		if s.cfg.TLS.Enabled {
@@ -344,7 +355,7 @@ func (s *Server) Start() error {
 		}
 		log.Printf("[TCP] Listening on %s", tcpAddr)
 		s.listeners = append(s.listeners, tcpListener)
-		s.wg.Add(1)
+		s.acceptWG.Add(1)
 		go s.acceptLoop(tcpListener, "tcp")
 	}
 	// Start HTTPS long-poll listener
@@ -361,7 +372,7 @@ func (s *Server) Start() error {
 		log.Printf("[HTTP] Warning: failed to start: %v", err)
 	} else {
 		s.listeners = append(s.listeners, httpListener)
-		s.wg.Add(1)
+		s.acceptWG.Add(1)
 		go s.acceptLoop(httpListener, "http")
 	}
 
@@ -379,7 +390,7 @@ func (s *Server) Start() error {
 		log.Printf("[WS] Warning: failed to start: %v", err)
 	} else {
 		s.listeners = append(s.listeners, wsListener)
-		s.wg.Add(1)
+		s.acceptWG.Add(1)
 		go s.acceptLoop(wsListener, "ws")
 	}
 
@@ -392,7 +403,7 @@ func (s *Server) Start() error {
 		} else {
 			dnsListener.Start()
 			s.listeners = append(s.listeners, dnsListener)
-			s.wg.Add(1)
+			s.acceptWG.Add(1)
 			go s.acceptLoop(dnsListener, "dns")
 		}
 	}
@@ -405,7 +416,7 @@ func (s *Server) Start() error {
 			log.Printf("[WEBRTC] Warning: failed to start: %v", err)
 		} else {
 			s.listeners = append(s.listeners, webrtcListener)
-			s.wg.Add(1)
+			s.acceptWG.Add(1)
 			go s.acceptLoop(webrtcListener, "webrtc")
 			log.Printf("[WEBRTC] Signaling listening on %s", webrtcAddr)
 		}
@@ -422,7 +433,7 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) acceptLoop(listener net.Listener, transportName string) {
-	defer s.wg.Done()
+	defer s.acceptWG.Done()
 
 	backoff := 100 * time.Millisecond
 	for {
@@ -476,10 +487,13 @@ func (s *Server) Stop() {
 		s.apiServer.Shutdown(ctx)
 	}
 
-	// Close all listeners first
+	// Close all listeners first, then wait for the accept-loops to notice
+	// and exit. Only after that is it safe to wait on wg: every potential
+	// wg.Add(1) for a connection handler has already happened.
 	for _, ln := range s.listeners {
 		ln.Close()
 	}
+	s.acceptWG.Wait()
 
 	// Clean up sessions without ranging while they're being modified
 	s.sessions.Range(func(key, value interface{}) bool {
@@ -757,6 +771,28 @@ func (s *Server) handleConnection(conn net.Conn, transportName string) {
 	log.Printf("[C2/%s] Session established: %s (%s@%s)",
 		transportName, sess.ID, sess.Username, sess.Hostname)
 
+	// Enforce the configured session cap BEFORE any persistence so a
+	// rejected connection never leaves an orphaned "active" row behind.
+	// Count+Store run under admitMu to close the TOCTOU window.
+	if s.cfg.Server.MaxSessions > 0 {
+		s.admitMu.Lock()
+		count := 0
+		s.sessions.Range(func(_, _ interface{}) bool { count++; return true })
+		if count >= int(s.cfg.Server.MaxSessions) {
+			s.admitMu.Unlock()
+			log.Printf("[C2/%s] Rejected session from %s: max_sessions (%d) reached",
+				transportName, remoteAddr, s.cfg.Server.MaxSessions)
+			sess.Close()
+			return
+		}
+		s.sessions.Store(sess.ID, sess)
+		s.admitMu.Unlock()
+	} else {
+		s.sessions.Store(sess.ID, sess)
+	}
+
+	sess.SetState(session.StateActive)
+
 	s.db.UpsertSession(&db.SessionRecord{
 		ID: sess.ID, AgentID: sess.AgentID, Hostname: sess.Hostname,
 		OS: sess.OS, Arch: sess.Arch, Username: sess.Username,
@@ -779,20 +815,6 @@ func (s *Server) handleConnection(conn net.Conn, transportName string) {
 			"transport":  transportName,
 		},
 	})
-
-	// Enforce the configured session cap.
-	if s.cfg.Server.MaxSessions > 0 {
-		count := 0
-		s.sessions.Range(func(_, _ interface{}) bool { count++; return true })
-		if count >= int(s.cfg.Server.MaxSessions) {
-			log.Printf("[C2/%s] Rejected session from %s: max_sessions (%d) reached",
-				transportName, remoteAddr, s.cfg.Server.MaxSessions)
-			return
-		}
-	}
-
-	s.sessions.Store(sess.ID, sess)
-	sess.SetState(session.StateActive)
 
 	s.handleMessageLoop(sess)
 

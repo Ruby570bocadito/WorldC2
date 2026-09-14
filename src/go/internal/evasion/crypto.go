@@ -4,7 +4,6 @@ package evasion
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"hash/crc32"
 	"syscall"
 	"unsafe"
@@ -224,6 +223,3 @@ const (
 	HashNtOpenProcess           = 0x7C34F1D2
 	HashNtReadVirtualMemory     = 0x4E2A8F6B
 )
-
-// Ensure imports are used
-var _ = binary.LittleEndian.Uint32

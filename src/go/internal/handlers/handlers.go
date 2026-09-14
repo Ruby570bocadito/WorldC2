@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -297,7 +299,10 @@ func (r *Router) handleSOCKS(w http.ResponseWriter, req *http.Request) {
 		SessionID string `json:"session_id"`
 		Port      int    `json:"port"`
 	}
-	json.NewDecoder(req.Body).Decode(&sockReq)
+	if err := json.NewDecoder(req.Body).Decode(&sockReq); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
 	if req.Method == "DELETE" {
 		r.server.SOCKS5().StopProxy(sockReq.SessionID)
 		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
@@ -343,7 +348,10 @@ func (r *Router) handleSOCKS(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleVault(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "POST" {
 		var c c2.Credential
-		json.NewDecoder(req.Body).Decode(&c)
+		if err := json.NewDecoder(req.Body).Decode(&c); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
 		id := r.server.Vault().Add(c)
 		json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "stored"})
 		return
@@ -365,7 +373,10 @@ func (r *Router) handleFiles(w http.ResponseWriter, req *http.Request) {
 			Module    string `json:"module"`
 			Data      string `json:"data"`
 		}
-		json.NewDecoder(req.Body).Decode(&fileReq)
+		if err := json.NewDecoder(req.Body).Decode(&fileReq); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
 		rec, err := r.server.Files().Store(fileReq.SessionID, fileReq.Filename, fileReq.Module, []byte(fileReq.Data))
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -385,7 +396,7 @@ func (r *Router) handleFileDownload(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), 404)
 		return
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, rec.Filename))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": rec.Filename}))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(data)
 }
@@ -411,7 +422,10 @@ func (r *Router) handlePortFwd(w http.ResponseWriter, req *http.Request) {
 		RemoteHost string `json:"remote_host"`
 		RemotePort int    `json:"remote_port"`
 	}
-	json.NewDecoder(req.Body).Decode(&fwdReq)
+	if err := json.NewDecoder(req.Body).Decode(&fwdReq); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
 
 	dialFn := func(target string) (net.Conn, error) {
 		var sess *session.Session
@@ -485,6 +499,10 @@ func (r *Router) handleOperatorDelete(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, err.Error(), 404)
 		return
 	}
+	// Invalidate outstanding JWTs for this operator: the signing key is
+	// persisted in the secrets store, so without an explicit revocation
+	// the deleted operator would keep API access until token expiry.
+	r.server.TokenManager().RevokeUser(id)
 	r.server.DB().LogAction(0, "operator_delete", id)
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
@@ -496,7 +514,10 @@ func (r *Router) handleNotes(w http.ResponseWriter, req *http.Request) {
 			SessionID string `json:"session_id"`
 			Content   string `json:"content"`
 		}
-		json.NewDecoder(req.Body).Decode(&noteReq)
+		if err := json.NewDecoder(req.Body).Decode(&noteReq); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
 		if noteReq.SessionID == "" || noteReq.Content == "" {
 			http.Error(w, "session_id and content required", 400)
 			return
@@ -524,7 +545,10 @@ func (r *Router) handleLock(w http.ResponseWriter, req *http.Request) {
 		SessionID string `json:"session_id"`
 		Action    string `json:"action"`
 	}
-	json.NewDecoder(req.Body).Decode(&lockReq)
+	if err := json.NewDecoder(req.Body).Decode(&lockReq); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
 	if lockReq.SessionID == "" {
 		http.Error(w, "session_id required", 400)
 		return
@@ -547,7 +571,10 @@ func (r *Router) handleProfiles(w http.ResponseWriter, req *http.Request) {
 			Jitter         float64 `json:"jitter"`
 			Transport      string  `json:"transport"`
 		}
-		json.NewDecoder(req.Body).Decode(&profReq)
+		if err := json.NewDecoder(req.Body).Decode(&profReq); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
 		id := fmt.Sprintf("profile-%x", time.Now().UnixNano())
 		if profReq.BeaconInterval == 0 {
 			profReq.BeaconInterval = 5
@@ -577,12 +604,27 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 		format = "text"
 	}
 
-	sessions, _ := r.server.DB().ListAllSessions()
-	creds, _ := r.server.DB().ListCredentials()
+	sessions, err := r.server.DB().ListAllSessions()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	creds, err := r.server.DB().ListCredentials()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	// Attribute the report to the authenticated operator instead of a
+	// hardcoded "admin".
+	operator := req.Header.Get("X-Auth-User")
+	if operator == "" {
+		operator = "unknown"
+	}
 
 	report := &reporting.EngagementReport{
 		Title:     "WORLDC2 C2 Engagement Report",
-		Operator:  "admin",
+		Operator:  operator,
 		StartDate: time.Now().Add(-24 * time.Hour),
 		EndDate:   time.Now(),
 		Summary: reporting.ReportSummary{
@@ -616,7 +658,6 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	report.Summary.UniqueHosts = len(report.Summary.UniqueOS)
 
 	var path string
-	var err error
 	if format == "csv" {
 		path, err = r.server.Reporter().GenerateCSV(report)
 	} else {
@@ -638,16 +679,28 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 			URL    string   `json:"url"`
 			Events []string `json:"events"`
 		}
-		json.NewDecoder(req.Body).Decode(&whReq)
-		if whReq.URL == "" {
-			http.Error(w, "url required", 400)
+		if err := json.NewDecoder(req.Body).Decode(&whReq); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
+		u, err := url.Parse(whReq.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			// Only absolute http(s) URLs: prevents file:// and
+			// custom-scheme SSRF abuse from the webhook forwarder.
+			http.Error(w, "url must be an absolute http(s) URL", 400)
 			return
 		}
 		r.server.SIEM().AddWebhook(siem.WebhookConfig{URL: whReq.URL, Events: whReq.Events})
 		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	// Return the actual webhook list — the OpenAPI spec documents this
+	// endpoint as "List of webhooks".
+	webhooks := r.server.SIEM().ListWebhooks()
+	if webhooks == nil {
+		webhooks = []siem.WebhookConfig{}
+	}
+	json.NewEncoder(w).Encode(webhooks)
 }
 
 // handleMTLSCert generates mTLS client certificates for agents.
@@ -665,7 +718,10 @@ func (r *Router) handleMTLSCert(w http.ResponseWriter, req *http.Request) {
 	var certReq struct {
 		AgentID string `json:"agent_id"`
 	}
-	json.NewDecoder(req.Body).Decode(&certReq)
+	if err := json.NewDecoder(req.Body).Decode(&certReq); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
 	if certReq.AgentID == "" {
 		certReq.AgentID = fmt.Sprintf("agent-%x", time.Now().UnixNano())
 	}

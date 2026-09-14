@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +21,10 @@ type Server struct {
 	// Callback to create connections through an agent
 	agentDial func(target string) (net.Conn, error)
 
-	running bool
+	// running is read by the accept-loop goroutine and written by Stop()
+	// from another goroutine — atomic avoids the data race and the
+	// associated busy-spin on accept errors.
+	running atomic.Bool
 	quit    chan struct{}
 	stats   ServerStats
 }
@@ -60,7 +64,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("socks listen: %w", err)
 	}
 
-	s.running = true
+	s.running.Store(true)
 	log.Printf("[SOCKS5] Listening on %s", s.addr)
 
 	go s.acceptLoop()
@@ -69,7 +73,7 @@ func (s *Server) Start() error {
 
 // Stop shuts down the SOCKS5 server.
 func (s *Server) Stop() {
-	s.running = false
+	s.running.Store(false)
 	close(s.quit)
 	if s.listener != nil {
 		s.listener.Close()
@@ -94,10 +98,13 @@ func (s *Server) Addr() string {
 }
 
 func (s *Server) acceptLoop() {
-	for s.running {
+	for s.running.Load() {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if s.running {
+			if s.running.Load() {
+				// Transient accept error while still running:
+				// back off instead of spinning the CPU.
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 			return

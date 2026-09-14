@@ -49,6 +49,8 @@ Thumbs.db
 
 # Operations (sensitive)
 loot/
+reports/
+dist/
 
 # IDE
 .vscode/

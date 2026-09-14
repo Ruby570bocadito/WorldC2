@@ -167,14 +167,14 @@ func (d *DB) UpsertSession(s *SessionRecord) error {
 	defer d.mu.Unlock()
 
 	_, err := d.conn.Exec(`
-		INSERT INTO sessions (id, agent_id, hostname, os, arch, username, is_admin, public_ip, local_ip, mac_address, last_seen, state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			hostname=excluded.hostname, os=excluded.os, arch=excluded.arch,
-			username=excluded.username, is_admin=excluded.is_admin,
-			public_ip=excluded.public_ip, local_ip=excluded.local_ip,
-			mac_address=excluded.mac_address, last_seen=excluded.last_seen,
-			state=excluded.state`,
+                INSERT INTO sessions (id, agent_id, hostname, os, arch, username, is_admin, public_ip, local_ip, mac_address, last_seen, state)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                        hostname=excluded.hostname, os=excluded.os, arch=excluded.arch,
+                        username=excluded.username, is_admin=excluded.is_admin,
+                        public_ip=excluded.public_ip, local_ip=excluded.local_ip,
+                        mac_address=excluded.mac_address, last_seen=excluded.last_seen,
+                        state=excluded.state`,
 		s.ID, s.AgentID, s.Hostname, s.OS, s.Arch, s.Username,
 		boolToInt(s.IsAdmin), s.PublicIP, s.LocalIP, s.MACAddr,
 		s.LastSeen, s.State,
@@ -208,9 +208,9 @@ func (d *DB) GetSession(id string) (*SessionRecord, error) {
 	s := &SessionRecord{}
 	var isAdmin int
 	err := d.conn.QueryRow(`
-		SELECT id, agent_id, hostname, os, arch, username, is_admin,
-			   public_ip, local_ip, mac_address, first_seen, last_seen, state
-		FROM sessions WHERE id=?`, id).Scan(
+                SELECT id, agent_id, hostname, os, arch, username, is_admin,
+                           public_ip, local_ip, mac_address, first_seen, last_seen, state
+                FROM sessions WHERE id=?`, id).Scan(
 		&s.ID, &s.AgentID, &s.Hostname, &s.OS, &s.Arch, &s.Username,
 		&isAdmin, &s.PublicIP, &s.LocalIP, &s.MACAddr,
 		&s.FirstSeen, &s.LastSeen, &s.State,
@@ -230,9 +230,9 @@ func (d *DB) GetSessionByAgentID(agentID string) (*SessionRecord, error) {
 	s := &SessionRecord{}
 	var isAdmin int
 	err := d.conn.QueryRow(`
-		SELECT id, agent_id, hostname, os, arch, username, is_admin,
-			   public_ip, local_ip, mac_address, first_seen, last_seen, state
-		FROM sessions WHERE agent_id=?`, agentID).Scan(
+                SELECT id, agent_id, hostname, os, arch, username, is_admin,
+                           public_ip, local_ip, mac_address, first_seen, last_seen, state
+                FROM sessions WHERE agent_id=?`, agentID).Scan(
 		&s.ID, &s.AgentID, &s.Hostname, &s.OS, &s.Arch, &s.Username,
 		&isAdmin, &s.PublicIP, &s.LocalIP, &s.MACAddr,
 		&s.FirstSeen, &s.LastSeen, &s.State,
@@ -250,10 +250,10 @@ func (d *DB) ListActiveSessions() ([]SessionRecord, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, agent_id, hostname, os, arch, username, is_admin,
-			   public_ip, local_ip, mac_address, first_seen, last_seen, state,
-			   (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id) as task_count
-		FROM sessions WHERE state != 'dead' ORDER BY last_seen DESC`)
+                SELECT id, agent_id, hostname, os, arch, username, is_admin,
+                           public_ip, local_ip, mac_address, first_seen, last_seen, state,
+                           (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id) as task_count
+                FROM sessions WHERE state != 'dead' ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -268,10 +268,10 @@ func (d *DB) ListAllSessions() ([]SessionRecord, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, agent_id, hostname, os, arch, username, is_admin,
-			   public_ip, local_ip, mac_address, first_seen, last_seen, state,
-			   (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id)
-		FROM sessions ORDER BY last_seen DESC`)
+                SELECT id, agent_id, hostname, os, arch, username, is_admin,
+                           public_ip, local_ip, mac_address, first_seen, last_seen, state,
+                           (SELECT COUNT(*) FROM tasks WHERE session_id=sessions.id)
+                FROM sessions ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -308,8 +308,8 @@ func (d *DB) InsertTask(t *TaskRecord) error {
 	defer d.mu.Unlock()
 
 	_, err := d.conn.Exec(`
-		INSERT INTO tasks (id, session_id, command, output, exit_code, success, issued_at, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                INSERT INTO tasks (id, session_id, command, output, exit_code, success, issued_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.SessionID, t.Command, t.Output, t.ExitCode, boolToInt(t.Success),
 		t.IssuedAt, t.CompletedAt,
 	)
@@ -323,7 +323,7 @@ func (d *DB) UpdateTaskResult(id, output string, exitCode int, success bool) err
 
 	now := time.Now()
 	_, err := d.conn.Exec(`
-		UPDATE tasks SET output=?, exit_code=?, success=?, completed_at=? WHERE id=?`,
+                UPDATE tasks SET output=?, exit_code=?, success=?, completed_at=? WHERE id=?`,
 		output, exitCode, boolToInt(success), now, id,
 	)
 	return err
@@ -335,8 +335,8 @@ func (d *DB) GetSessionTasks(sessionID string) ([]TaskRecord, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, session_id, command, output, exit_code, success, issued_at, completed_at
-		FROM tasks WHERE session_id=? ORDER BY issued_at DESC LIMIT 100`, sessionID)
+                SELECT id, session_id, command, output, exit_code, success, issued_at, completed_at
+                FROM tasks WHERE session_id=? ORDER BY issued_at DESC LIMIT 100`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -383,8 +383,8 @@ func (d *DB) AuthenticateOperator(username, password string) (*OperatorRecord, e
 
 	op := &OperatorRecord{}
 	err := d.conn.QueryRow(`
-		SELECT id, username, password_hash, role, created_at
-		FROM operators WHERE username=?`, username).Scan(
+                SELECT id, username, password_hash, role, created_at
+                FROM operators WHERE username=?`, username).Scan(
 		&op.ID, &op.Username, &op.PasswordHash, &op.Role, &op.CreatedAt,
 	)
 	if err != nil {
@@ -450,7 +450,11 @@ func (d *DB) GetSecret(key string) ([]byte, error) {
 	if d.enc != nil {
 		dec, err := d.enc.Decrypt(string(value))
 		if err != nil {
-			// Fallback: return raw value if decryption fails (legacy data)
+			// Fallback: return raw value if decryption fails (legacy data
+			// written before encryption was enabled). Never silent — an
+			// operator must know the value came back undecrypted, because
+			// it also means at-rest protection did not apply to it.
+			log.Printf("[DB] WARNING: secret %q failed AES-GCM decryption (%v) — returning raw value (legacy plaintext?)", key, err)
 			return value, nil
 		}
 		return dec, nil
@@ -496,8 +500,8 @@ func (d *DB) AddCredential(c *CredentialRecord) error {
 	}
 
 	_, err := d.conn.Exec(`
-		INSERT INTO credentials (id, username, password, domain, host, service, source, notes, captured)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                INSERT INTO credentials (id, username, password, domain, host, service, source, notes, captured)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.Username, password, c.Domain, c.Host, c.Service, c.Source, notes, c.Captured)
 	return err
 }
@@ -508,8 +512,8 @@ func (d *DB) ListCredentials() ([]CredentialRecord, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, username, password, domain, host, service, source, notes, captured
-		FROM credentials ORDER BY captured DESC`)
+                SELECT id, username, password, domain, host, service, source, notes, captured
+                FROM credentials ORDER BY captured DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -540,8 +544,8 @@ func (d *DB) SearchCredentials(query string) ([]CredentialRecord, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, username, password, domain, host, service, source, notes, captured
-		FROM credentials ORDER BY captured DESC`)
+                SELECT id, username, password, domain, host, service, source, notes, captured
+                FROM credentials ORDER BY captured DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -598,8 +602,8 @@ func (d *DB) QueueTask(t *QueuedTask) error {
 	defer d.mu.Unlock()
 
 	_, err := d.conn.Exec(`
-		INSERT INTO task_queue (id, session_id, command, status, timeout_sec, operator_id)
-		VALUES (?, ?, ?, 'pending', ?, ?)`,
+                INSERT INTO task_queue (id, session_id, command, status, timeout_sec, operator_id)
+                VALUES (?, ?, ?, 'pending', ?, ?)`,
 		t.ID, t.SessionID, t.Command, t.TimeoutSec, t.OperatorID)
 	return err
 }
@@ -610,8 +614,8 @@ func (d *DB) GetPendingTasks(sessionID string) ([]QueuedTask, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, session_id, command, status, result, exit_code, success, created_at, delivered_at, completed_at, operator_id, timeout_sec
-		FROM task_queue WHERE session_id=? AND status='pending' ORDER BY created_at ASC`, sessionID)
+                SELECT id, session_id, command, status, result, exit_code, success, created_at, delivered_at, completed_at, operator_id, timeout_sec
+                FROM task_queue WHERE session_id=? AND status='pending' ORDER BY created_at ASC`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +639,7 @@ func (d *DB) CompleteTask(id, result string, exitCode int, success bool) error {
 	defer d.mu.Unlock()
 
 	_, err := d.conn.Exec(`
-		UPDATE task_queue SET status=?, result=?, exit_code=?, success=?, completed_at=? WHERE id=?`,
+                UPDATE task_queue SET status=?, result=?, exit_code=?, success=?, completed_at=? WHERE id=?`,
 		map[bool]string{true: "completed", false: "failed"}[success], result, exitCode, boolToInt(success), time.Now(), id)
 	return err
 }
@@ -646,8 +650,8 @@ func (d *DB) ListQueuedTasks(sessionID string) ([]QueuedTask, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT id, session_id, command, status, result, exit_code, success, created_at, delivered_at, completed_at, operator_id, timeout_sec
-		FROM task_queue WHERE session_id=? ORDER BY created_at DESC`, sessionID)
+                SELECT id, session_id, command, status, result, exit_code, success, created_at, delivered_at, completed_at, operator_id, timeout_sec
+                FROM task_queue WHERE session_id=? ORDER BY created_at DESC`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -684,10 +688,10 @@ func (d *DB) GetSessionNotes(sessionID string) ([]map[string]interface{}, error)
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT sn.id, sn.content, sn.operator_id, o.username, sn.created_at
-		FROM session_notes sn
-		LEFT JOIN operators o ON sn.operator_id = o.id
-		WHERE sn.session_id=? ORDER BY sn.created_at ASC`, sessionID)
+                SELECT sn.id, sn.content, sn.operator_id, o.username, sn.created_at
+                FROM session_notes sn
+                LEFT JOIN operators o ON sn.operator_id = o.id
+                WHERE sn.session_id=? ORDER BY sn.created_at ASC`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -890,6 +894,3 @@ func generateID(prefix string) string {
 	rand.Read(b)
 	return fmt.Sprintf("%s-%x", prefix, b)
 }
-
-// Ensure log is imported
-var _ = log.Default

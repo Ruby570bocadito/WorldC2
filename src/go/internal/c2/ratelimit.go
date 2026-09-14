@@ -61,13 +61,6 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return true
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // Cleanup removes stale entries older than 2x the window.
 func (rl *RateLimiter) Cleanup() {
 	rl.mu.Lock()

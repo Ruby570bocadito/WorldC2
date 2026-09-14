@@ -7,7 +7,7 @@
 │                        C2 Server                            │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐ │
 │  │ TCP/TLS  │  │   HTTP   │  │WebSocket │  │    DNS     │ │
-│  │ :8443    │  │  :8445   │  │  :8446   │  │   :53      │ │
+│  │ :8443    │  │  :8445   │  │  :8446   │  │ (opt-in)   │ │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬──────┘ │
 │       └──────────────┴──────────────┴──────────────┘        │
 │                            │                                │
@@ -155,6 +155,17 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/POST/DELETE | `/api/socks` | Yes | SOCKS proxy |
 | GET/POST/DELETE | `/api/portfwd` | Yes | Port forwarding |
 | GET/POST/DELETE | `/api/operators` | Admin | Operator management |
+| POST | `/api/login` | No | Authenticate, returns access + refresh JWT |
+| POST | `/api/refresh` | No | Exchange refresh token for a new access token |
+| GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
+| GET | `/api/files/download/:id` | Yes | Download exfiltrated file |
+| GET/POST | `/api/notes` | Yes | Session notes (`collab:write`) |
+| POST | `/api/lock` | Yes | Lock/unlock session (`collab:write`) |
+| GET/POST | `/api/profiles` | Yes | Agent config profiles (`collab:write`) |
+| GET | `/api/report` | Yes | Generate engagement report (`report:generate`) |
+| GET/POST | `/api/webhooks` | Admin | SIEM webhook destinations |
+| POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate |
+| GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator (revokes their JWTs) |
 
 ## Development
 

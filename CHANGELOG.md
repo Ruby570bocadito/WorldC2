@@ -1,5 +1,65 @@
 # WorldC2 — Changelog
 
+## v1.2.1 — Agent round 1: audit fixes, security hardening, honest docs (2026-09-14)
+
+First maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Fixed (Bugs/Seguridad)
+
+- **Console commands are now persisted and audited.** `CreateTaskWithContext` (used by
+  `/api/cmd` and `/api/broadcast`) never called `InsertTask`/`LogAction`, so dashboard
+  commands were invisible in the tasks table and audit log. Both are now recorded, and the
+  trailing `UpdateTaskResult` actually has a row to update.
+- **Data races and busy-spins in accept loops.** `PortForward.running` and SOCKS
+  `Server.running` are now `atomic.Bool` (read by accept-loop, written by Stop) and both
+  loops back off 100 ms on transient accept errors instead of spinning at 100% CPU.
+- **Shutdown WaitGroup race.** Listener accept-loops now run on their own `acceptWG`;
+  `Stop()` waits for it before `wg.Wait()`, closing the window where a late `wg.Add(1)`
+  for a just-accepted connection could panic with `WaitGroup misuse`.
+- **`max_sessions` TOCTOU and orphaned rows.** The session cap is enforced *before* the
+  DB row is written, count+store are serialized under an admission mutex, and rejected
+  sessions are closed. Rejected connections no longer leave phantom `active` sessions.
+- **Nine handlers decoded JSON without checking the error** (socks, vault, files, portfwd,
+  notes, lock, profiles, webhooks, mtls) — a truncated body used to create empty records
+  with HTTP 200. All now return 400.
+- **`Content-Disposition` injection hardening:** download filenames are now escaped with
+  `mime.FormatMediaType` instead of raw string interpolation.
+- **Webhook URLs validated:** only absolute `http(s)` URLs are accepted (SSRF guard);
+  `GET /api/webhooks` now returns the real list (as the OpenAPI spec always claimed).
+- **Decryption fallback is no longer silent:** if an at-rest-encrypted secret fails AES-GCM
+  decryption, the server logs a warning before returning the raw (legacy) value.
+- **Engagement reports** attribute to the authenticated operator (was hardcoded `admin`)
+  and surface DB errors instead of ignoring them.
+
+### Added (Implementaciones)
+
+- **`-no-persist` agent flag** — disables first-run auto-persistence (cron/bashrc, registry/
+  schtasks, LaunchAgent). Recommended for authorized labs, CI and demos; the auto-persistence
+  behavior itself is now documented in the README (honesty policy).
+- **JWT revocation per operator** — deleting an operator revokes every token issued up to
+  that moment (`TokenManager.RevokeUser`, minimum-`iat` registry), closing a 12-hour
+  exposure window since the signing key persists across restarts.
+- **Dedicated login rate limit** — `/api/login` gets its own 10 req/min bucket on top of the
+  global 60 req/min API limiter, blunting password brute-force.
+- **`auth` package test suite** — 9 tests covering roundtrip, expiry, refresh/access
+  separation, algorithm pinning, signature tampering, revocation semantics and concurrency.
+
+### Changed (Pulimiento)
+
+- Removed 12 `var _ =` import-forcing markers (plus orphaned imports) and a `min()` that
+  shadowed the Go 1.21+ builtin.
+- Fixed incomplete ANSI color codes in all 10 test scripts (regression of v1.1.2).
+- README honesty pass: HTTP long-poll listener marked experimental (not agent-reachable),
+  agent auto-persistence documented, `-no-persist` shown in Agents/Security sections.
+- QUICK_REFERENCE: added port 8447 (WebRTC), corrected 8445 note, agent flag example.
+- DEVELOPER_GUIDE: API table completed with 10 previously missing endpoints; DNS listener
+  labeled opt-in.
+- `openapi.yaml`: `auditor` role added to the role enum.
+- `.gitignore`: added `reports/` and `dist/`.
+- Verification: `go build`, `go vet` clean; `go test -race ./...` all green; live smoke test
+  of login, revocation, JSON validation, webhooks and rate limiting.
+
 ## v1.2.0 — Roadmap completion: WebRTC transport, resumable exfil, DNS in the agent chain (2026-09-11)
 
 All three features the feature matrix marked as *Planned/Experimental* are now real, wired
