@@ -177,12 +177,12 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
 | GET | `/api/files/download/:id` | Yes | Download exfiltrated file |
 | DELETE | `/api/files/:id` | Yes | Purge a single loot artifact — blob on disk, current listing and persisted record (`files:delete`, admin only) |
-| GET/POST | `/api/notes` | Yes | Session notes — GET requires `collab:read` (all roles), POST `collab:write` (admin/operator) |
+| GET/POST | `/api/notes` | Yes | Session notes — GET requires `collab:read` (all roles), POST `collab:write` (admin/operator). POST caps: `session_id` ≤ 128 chars, `content` ≤ 10000 chars (notes live in SQLite forever) |
 | POST | `/api/lock` | Yes | Lock/unlock session (`collab:write`) |
 | GET/POST | `/api/profiles` | Yes | Agent config profiles — GET `collab:read` (all roles), POST `collab:write` (admin/operator). POST validates: `name` 1–64 chars (trimmed), `beacon_interval` 1–3600 s (0 → default 5), `jitter` 0–0.95 (0 → default 0.3), `transport` in the allowlist `dns/http/tcp/tls/webrtc/ws` (empty → `tls`) |
 | DELETE | `/api/profiles/:id` | Yes | Delete an agent profile (`collab:write`); 404 on unknown ids, 400 on control characters in the id |
 | GET | `/api/report` | Yes | Generate engagement report (`report:generate`) |
-| GET/POST/DELETE | `/api/webhooks` | Admin | SIEM webhook destinations (persisted in `webhooks`, migration 9; re-hydrated on start; DELETE takes `?id=...` from the POST response) |
+| GET/POST/DELETE | `/api/webhooks` | Admin | SIEM webhook destinations (persisted in `webhooks`, migration 9; re-hydrated on start; DELETE takes `?id=...` from the POST response). POST validation (round 13): absolute http(s) URL ≤ 2048 chars, ≤ 16 headers (keys ≤ 128 non-empty, values ≤ 1024), `timeout_ms` 100–60000 (0 → default 5000 — the old 0 meant an unlimited client timeout), `events` entries validated against the event-type allowlist (empty list = forward everything). GET answers `id/url/headers/timeout_ms/events` with the timeout in milliseconds |
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate |
 | GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator — resolves the account by numeric id, revokes its JWTs by username, 404 on unknown ids |
 

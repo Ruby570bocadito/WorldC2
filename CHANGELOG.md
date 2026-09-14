@@ -1,5 +1,48 @@
 # WorldC2 — Changelog
 
+## v1.14.0 — Round 13: Webhooks console view, Dashboard report, transversal input validation (2026-09-14)
+
+Thirteenth round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Webhooks view in the operator console (admin)** — the SIEM webhook API (persisted since
+  migration 9) had no UI; the console now ships a `/webhooks` route (nav entry with a new
+  broadcast icon) listing destinations (endpoint, event filter as tags, timeout), creating
+  them through a validated form (URL, optional `name: value` header, timeout, per-event
+  checkboxes) and deleting them with confirmation via `DELETE /api/webhooks?id=`. The listing
+  now answers a clean JSON contract (`id/url/headers/timeout_ms/events`) instead of leaking
+  `time.Duration` nanoseconds.
+- **Engagement report from the Dashboard** — `GET /api/report` existed with no UI either;
+  admin/operator now get a "Download report" action on the Dashboard that fetches
+  `?format=text` through the authenticated download layer (spinner, toast feedback).
+
+### Changed (Bugs/Seguridad)
+
+- **Webhook creation validates input (round 13 transversal pass, part 1)** — on top of the
+  existing scheme check (http/s only, SSRF guard): URL ≤ 2048 chars, ≤ 16 headers with
+  non-empty keys ≤ 128 and values ≤ 1024, `timeout_ms` bounded to 100–60000 with 0 → default
+  5000 (a 0 timeout previously reached `http.Client` as unlimited — a dead endpoint hung a
+  forwarding goroutine forever), and `events` entries validated against the server's real
+  event-type allowlist (unknown filters used to be stored verbatim and the webhook silently
+  never fired).
+- **Session notes are length-capped (transversal pass, part 2)** — `session_id` ≤ 128 chars
+  and `content` ≤ 10000 chars on `POST /api/notes`; notes live in SQLite forever, so an
+  unbounded body was a disk-fill vector.
+
+### Documentation (Pulimiento)
+
+- README: SIEM webhooks row updated (console view + validation contract) and a new
+  "Engagement report" row; DEVELOPER_GUIDE documents the notes caps and the full webhook
+  contract. CHANGELOG entry v1.14.0. gofmt normalized; zero new dependencies.
+
+### Tests
+
+- `internal/handlers` (new `webhooks_test.go`): `TestWebhookCreateValidation` (defaults + 8
+  rejections), `TestWebhooksListContract` (create → listing shape with timeout_ms → delete →
+  404 re-delete), `TestNotesValidation` (both caps + a valid note landing).
+
 ## v1.13.0 — Round 12: Profiles console view, aria-sort, refresh-replay shim removal, profile validation (2026-09-14)
 
 Twelfth round executed by the four-agent flow (Director → Implementaciones →

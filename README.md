@@ -46,7 +46,9 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🔄 DNS transport | ✅ Working | TXT tunneling integrated in the agent fallback chain (opt-in: `worldc2-agent -dns-domain your.domain`) |
 | 🕸️ WebRTC transport | ✅ Working | Pion data channels with HTTP signaling (port 8447), detached channel adapted as `net.Conn`; covered by a loopback roundtrip test |
 | 📈 Resumable file exfil | ✅ Working | `exfil:<path>` streams chunked uploads; server reassembles, survives reconnects/restarts and resumes from the exact byte via `__exfil_resume` tasks |
-| 🔔 SIEM webhooks | ✅ Working | `POST/GET/DELETE /api/webhooks` (admin); destinations are **persisted** (migration 9) and re-hydrated on server start |
+| 🎛️ Agent profiles | ✅ Working | Beacon cadence / jitter / transport presets with server-side validation (name, interval, jitter ranges and a transport allowlist) and honest 404 deletes (`GET/POST /api/profiles`, `DELETE /api/profiles/:id`); managed from the console Profiles view |
+| 🔔 SIEM webhooks | ✅ Working | `POST/GET/DELETE /api/webhooks` (admin); destinations are **persisted** (migration 9) and re-hydrated on server start; creation validates URL length, header caps, a real forwarding timeout (100–60000 ms) and the event-type allowlist; managed from the console Webhooks view |
+| 📈 Engagement report | ✅ Working | `GET /api/report?format=text|csv|json` (`report:generate`) compiles sessions, tasks and loot into a report — downloadable from the Dashboard |
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.

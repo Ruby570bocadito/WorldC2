@@ -5,10 +5,16 @@
         <h1 class="page-title">Dashboard</h1>
         <p class="page-sub">Operational overview · refreshed every 5s</p>
       </div>
-      <span class="badge" :class="hasError ? 'badge-danger' : 'badge-ok'">
-        <span class="dot" :class="hasError ? 'dot-danger' : 'dot-ok'" />
-        {{ hasError ? 'sync error' : 'live' }}
-      </span>
+      <div class="head-side">
+        <button v-if="canReport" class="btn btn-ghost btn-sm" type="button" :disabled="reportBusy" @click="downloadReport">
+          <span v-if="reportBusy" class="spinner" />
+          <span>{{ reportBusy ? 'Generating…' : 'Download report' }}</span>
+        </button>
+        <span class="badge" :class="hasError ? 'badge-danger' : 'badge-ok'">
+          <span class="dot" :class="hasError ? 'dot-danger' : 'dot-ok'" />
+          {{ hasError ? 'sync error' : 'live' }}
+        </span>
+      </div>
     </div>
 
     <!-- stat cards -->
@@ -143,7 +149,7 @@
 </template>
 
 <script>
-import { api } from '../utils/api.js'
+import { api, downloadFile } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtAgo, shortId } from '../utils/format.js'
 import {
@@ -174,9 +180,15 @@ export default {
       executing: false,
       output: '',
       outputError: false,
+      // engagement report
+      reportBusy: false,
     }
   },
   computed: {
+    canReport() {
+      const role = localStorage.getItem('bty_role') || 'operator'
+      return role === 'admin' || role === 'operator'
+    },
     statCards() {
       const taskTotal = this.sessions.reduce((acc, s) => acc + (Number(s.TaskCount) || 0), 0)
       return [
@@ -257,6 +269,19 @@ export default {
   methods: {
     fmtAgo,
     shortId,
+    async downloadReport() {
+      if (this.reportBusy) return
+      this.reportBusy = true
+      try {
+        // GET /api/report?format=text (report:generate — admin/operator)
+        await downloadFile('/api/report?format=text', 'worldc2-report.txt')
+        notify.ok('Engagement report downloaded')
+      } catch (e) {
+        if (!e.expired) notify.error('Report failed: ' + e.message)
+      } finally {
+        this.reportBusy = false
+      }
+    },
     openFiltered(group, name) {
       // Deep-link into Sessions with the matching filter pre-applied
       // (Sessions reads ?transport= and ?version=).
@@ -340,6 +365,11 @@ export default {
 </script>
 
 <style scoped>
+.head-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

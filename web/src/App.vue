@@ -85,6 +85,7 @@ import {
   IconFiles,
   IconModules,
   IconProfiles,
+  IconWebhook,
   IconOperators,
   IconLogout,
   IconMenu,
@@ -98,6 +99,7 @@ const NAV = [
   { to: '/modules', label: 'Modules', icon: IconModules },
   { to: '/profiles', label: 'Profiles', icon: IconProfiles },
   { to: '/files', label: 'Files', icon: IconFiles },
+  { to: '/webhooks', label: 'Webhooks', icon: IconWebhook },
   { to: '/operators', label: 'Operators', icon: IconOperators },
 ]
 
@@ -111,6 +113,7 @@ export default {
     IconFiles,
     IconModules,
     IconProfiles,
+    IconWebhook,
     IconOperators,
     IconLogout,
     IconMenu,

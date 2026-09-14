@@ -634,6 +634,16 @@ func (r *Router) handleNotes(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "session_id and content required", 400)
 			return
 		}
+		// Length caps (round 13): notes live in SQLite forever, so an
+		// unbounded body is a disk-fill vector and a console render hazard.
+		if len(noteReq.SessionID) > 128 {
+			http.Error(w, `{"error":"session_id must be 128 characters or fewer"}`, 400)
+			return
+		}
+		if len(noteReq.Content) > 10000 {
+			http.Error(w, `{"error":"content must be 10000 characters or fewer"}`, 400)
+			return
+		}
 		r.server.DB().AddSessionNote(noteReq.SessionID, 0, noteReq.Content)
 		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
 		return
@@ -840,6 +850,29 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 // handleWebhooks manages SIEM webhook destinations. Destinations are
 // persisted in the webhooks table (migration 9) and re-hydrated into the
 // SIEM forwarder on server start, so they survive restarts.
+
+// knownSIEMEvents is the allowlist of event types a webhook may subscribe
+// to — exactly the strings the server emits. Before round 13 any value was
+// stored verbatim, and an unknown filter string meant the webhook silently
+// never fired (contains() gates forwarding), a misconfig no operator could
+// see until an incident was missed.
+var knownSIEMEvents = map[string]bool{
+	"agent_killed": true, "agent_purged": true, "operator_login": true,
+	"session_disconnect": true, "session_error": true, "session_established": true,
+	"session_passive": true, "task_result": true,
+}
+
+// webhookView is the JSON contract of the webhook listing: explicit fields
+// and the timeout as milliseconds (the siem.WebhookConfig struct marshals
+// time.Duration as bare nanoseconds, unusable for clients).
+type webhookView struct {
+	ID        string            `json:"id"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers"`
+	TimeoutMS int64             `json:"timeout_ms"`
+	Events    []string          `json:"events"`
+}
+
 func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodPost:
@@ -853,11 +886,43 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "invalid JSON", 400)
 			return
 		}
+		// Input validation (round 13): length caps and sane bounds on top
+		// of the scheme check below.
+		if len(whReq.URL) > 2048 {
+			http.Error(w, `{"error":"url must be 2048 characters or fewer"}`, 400)
+			return
+		}
+		if len(whReq.Headers) > 16 {
+			http.Error(w, `{"error":"at most 16 headers"}`, 400)
+			return
+		}
+		for k, v := range whReq.Headers {
+			if k == "" || len(k) > 128 || len(v) > 1024 {
+				http.Error(w, `{"error":"header keys must be non-empty (max 128) and values max 1024"}`, 400)
+				return
+			}
+		}
+		if whReq.Timeout == 0 {
+			whReq.Timeout = 5000
+		}
+		if whReq.Timeout < 100 || whReq.Timeout > 60000 {
+			// 0 previously meant "no client timeout" (http.Client treats
+			// <=0 as unlimited): a dead endpoint would hang a forwarding
+			// goroutine forever. Every webhook now has a real timeout.
+			http.Error(w, `{"error":"timeout_ms must be between 100 and 60000"}`, 400)
+			return
+		}
+		for _, ev := range whReq.Events {
+			if !knownSIEMEvents[ev] {
+				http.Error(w, `{"error":"unknown event type `+ev+` (allowed: agent_killed, agent_purged, operator_login, session_disconnect, session_error, session_established, session_passive, task_result)"}`, 400)
+				return
+			}
+		}
 		u, err := url.Parse(whReq.URL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			// Only absolute http(s) URLs: prevents file:// and
 			// custom-scheme SSRF abuse from the webhook forwarder.
-			http.Error(w, "url must be an absolute http(s) URL", 400)
+			http.Error(w, `url must be an absolute http(s) URL`, 400)
 			return
 		}
 		id := newWebhookID()
@@ -907,12 +972,28 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 
 	default:
 		// GET: return the actual webhook list — the OpenAPI spec documents
-		// this endpoint as "List of webhooks".
-		webhooks := r.server.SIEM().ListWebhooks()
-		if webhooks == nil {
-			webhooks = []siem.WebhookConfig{}
+		// this endpoint as "List of webhooks". Mapped through webhookView
+		// so clients see timeout_ms instead of raw nanoseconds.
+		configs := r.server.SIEM().ListWebhooks()
+		views := make([]webhookView, 0, len(configs))
+		for _, wh := range configs {
+			events := wh.Events
+			if events == nil {
+				events = []string{}
+			}
+			headers := wh.Headers
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			views = append(views, webhookView{
+				ID:        wh.ID,
+				URL:       wh.URL,
+				Headers:   headers,
+				TimeoutMS: wh.Timeout.Milliseconds(),
+				Events:    events,
+			})
 		}
-		json.NewEncoder(w).Encode(webhooks)
+		json.NewEncoder(w).Encode(views)
 	}
 }
 

@@ -83,6 +83,12 @@ export const IconProfiles = icon('Profiles', [
   c(7.5, 18, 2),
 ])
 
+export const IconWebhook = icon('Webhook', [
+  c(12, 12, 3),
+  p('M5.6 5.6a9 9 0 000 12.8'),
+  p('M18.4 5.6a9 9 0 010 12.8'),
+])
+
 /* actions */
 
 export const IconLogout = icon('Logout', [
