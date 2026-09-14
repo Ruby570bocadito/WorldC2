@@ -2,11 +2,14 @@ package handlers
 
 import (
 	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -685,12 +688,17 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"path": path, "status": "generated"})
 }
 
-// handleWebhooks manages SIEM webhook destinations.
+// handleWebhooks manages SIEM webhook destinations. Destinations are
+// persisted in the webhooks table (migration 9) and re-hydrated into the
+// SIEM forwarder on server start, so they survive restarts.
 func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
-	if req.Method == "POST" {
+	switch req.Method {
+	case http.MethodPost:
 		var whReq struct {
-			URL    string   `json:"url"`
-			Events []string `json:"events"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+			Timeout int               `json:"timeout_ms"`
+			Events  []string          `json:"events"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&whReq); err != nil {
 			http.Error(w, "invalid JSON", 400)
@@ -703,17 +711,72 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "url must be an absolute http(s) URL", 400)
 			return
 		}
-		r.server.SIEM().AddWebhook(siem.WebhookConfig{URL: whReq.URL, Events: whReq.Events})
-		json.NewEncoder(w).Encode(map[string]string{"status": "added"})
-		return
+		id := newWebhookID()
+		cfg := siem.WebhookConfig{
+			ID:      id,
+			URL:     whReq.URL,
+			Headers: whReq.Headers,
+			Timeout: time.Duration(whReq.Timeout) * time.Millisecond,
+			Events:  whReq.Events,
+		}
+		// Persist first: if the DB write fails the destination must NOT
+		// become live in-memory only (it would silently diverge from the
+		// hydrated set on the next restart).
+		if err := r.server.DB().SaveWebhook(&db.WebhookRecord{
+			ID:        id,
+			URL:       cfg.URL,
+			Headers:   cfg.Headers,
+			TimeoutMS: whReq.Timeout,
+			Events:    cfg.Events,
+		}); err != nil {
+			log.Printf("[API] persist webhook: %v", err)
+			http.Error(w, "failed to persist webhook", 500)
+			return
+		}
+		r.server.SIEM().AddWebhook(cfg)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"status": "added", "id": id})
+
+	case http.MethodDelete:
+		id := req.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "missing webhook id (?id=...)", 400)
+			return
+		}
+		removed := r.server.SIEM().RemoveWebhook(id)
+		deleted, err := r.server.DB().DeleteWebhook(id)
+		if err != nil {
+			log.Printf("[API] delete webhook %s: %v", id, err)
+			http.Error(w, "failed to delete webhook", 500)
+			return
+		}
+		if !removed && !deleted {
+			http.Error(w, "webhook not found", 404)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
+
+	default:
+		// GET: return the actual webhook list — the OpenAPI spec documents
+		// this endpoint as "List of webhooks".
+		webhooks := r.server.SIEM().ListWebhooks()
+		if webhooks == nil {
+			webhooks = []siem.WebhookConfig{}
+		}
+		json.NewEncoder(w).Encode(webhooks)
 	}
-	// Return the actual webhook list — the OpenAPI spec documents this
-	// endpoint as "List of webhooks".
-	webhooks := r.server.SIEM().ListWebhooks()
-	if webhooks == nil {
-		webhooks = []siem.WebhookConfig{}
+}
+
+// newWebhookID mints a random identifier for a webhook destination
+// (crypto/rand, not predictable counters — the ID is referenced by DELETE).
+func newWebhookID() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure is catastrophic but must not panic the API;
+		// fall back to a time-derived ID rather than an empty one.
+		return fmt.Sprintf("wh-%x", time.Now().UnixNano())
 	}
-	json.NewEncoder(w).Encode(webhooks)
+	return fmt.Sprintf("wh-%s", hex.EncodeToString(b))
 }
 
 // handleMTLSCert generates mTLS client certificates for agents.

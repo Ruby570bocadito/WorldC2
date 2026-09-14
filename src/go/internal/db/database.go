@@ -3,6 +3,7 @@ package db
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -91,27 +92,37 @@ func OpenWithEncryption(dsn string, masterKey []byte) (*DB, error) {
 
 	db := &DB{conn: conn}
 
-	// Initialize encryptor if master key provided
-	if len(masterKey) > 0 {
-		enc, err := NewEncryptor(masterKey)
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("create encryptor: %w", err)
-		}
-		db.enc = enc
-		log.Println("[DB] At-rest encryption enabled (AES-256-GCM)")
-	}
-
 	// Enable WAL mode and other performance optimizations
 	if err := db.configureSQLite(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("configure sqlite: %w", err)
 	}
 
-	// Run migrations instead of direct schema creation
+	// Run migrations FIRST: the v2 encryptor needs the _kdf_meta table
+	// (migration 10) to load or persist its per-database KDF salt, and no
+	// migration touches encrypted column data (DDL only), so the order
+	// swap from the legacy layout is safe.
 	if err := db.Migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+
+	// Initialize encryptor if master key provided. Uses the PBKDF2-stretched
+	// key (v2 format) for new writes while remaining able to decrypt legacy
+	// (sha256-derived) ciphertext already stored in older databases.
+	if len(masterKey) > 0 {
+		salt, err := db.ensureKDFSalt()
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("kdf salt: %w", err)
+		}
+		enc, err := NewEncryptorV2(masterKey, salt)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("create encryptor: %w", err)
+		}
+		db.enc = enc
+		log.Println("[DB] At-rest encryption enabled (AES-256-GCM, PBKDF2-SHA256 x600000 stretched key)")
 	}
 
 	return db, nil
@@ -783,4 +794,97 @@ func generateID(prefix string) string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return fmt.Sprintf("%s-%x", prefix, b)
+}
+
+// WebhookRecord represents a persisted SIEM webhook destination.
+type WebhookRecord struct {
+	ID        string
+	URL       string
+	Headers   map[string]string
+	TimeoutMS int
+	Events    []string
+	Created   string
+}
+
+// SaveWebhook inserts or replaces a webhook destination (persistence layer of
+// POST /api/webhooks). Headers and Events are stored as JSON documents.
+func (d *DB) SaveWebhook(wr *WebhookRecord) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	headersJSON := "{}"
+	if wr.Headers != nil {
+		b, err := json.Marshal(wr.Headers)
+		if err != nil {
+			return fmt.Errorf("marshal headers: %w", err)
+		}
+		headersJSON = string(b)
+	}
+
+	eventsJSON := "[]"
+	if wr.Events != nil {
+		b, err := json.Marshal(wr.Events)
+		if err != nil {
+			return fmt.Errorf("marshal events: %w", err)
+		}
+		eventsJSON = string(b)
+	}
+
+	_, err := d.conn.Exec(`
+                INSERT INTO webhooks (id, url, headers, timeout_ms, events)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                        url=excluded.url, headers=excluded.headers,
+                        timeout_ms=excluded.timeout_ms, events=excluded.events`,
+		wr.ID, wr.URL, headersJSON, wr.TimeoutMS, eventsJSON,
+	)
+	return err
+}
+
+// ListWebhooks returns every persisted webhook destination, ordered by
+// creation time. Used to hydrate the SIEM forwarder on server start so
+// webhook destinations survive restarts.
+func (d *DB) ListWebhooks() ([]*WebhookRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.conn.Query(`SELECT id, url, headers, timeout_ms, events, COALESCE(created_at, '') FROM webhooks ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*WebhookRecord
+	for rows.Next() {
+		wr := &WebhookRecord{}
+		var headersJSON, eventsJSON string
+		if err := rows.Scan(&wr.ID, &wr.URL, &headersJSON, &wr.TimeoutMS, &eventsJSON, &wr.Created); err != nil {
+			return nil, err
+		}
+		if headersJSON != "" && headersJSON != "{}" {
+			json.Unmarshal([]byte(headersJSON), &wr.Headers)
+		}
+		if eventsJSON != "" && eventsJSON != "[]" {
+			json.Unmarshal([]byte(eventsJSON), &wr.Events)
+		}
+		out = append(out, wr)
+	}
+	return out, rows.Err()
+}
+
+// DeleteWebhook removes a persisted webhook destination. It reports whether a
+// row was actually deleted so DELETE /api/webhooks can answer 404 precisely.
+func (d *DB) DeleteWebhook(id string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`DELETE FROM webhooks WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

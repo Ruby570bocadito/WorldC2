@@ -1,10 +1,8 @@
 package crypto
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 
@@ -131,19 +129,6 @@ func Decrypt(key []byte, data []byte) ([]byte, error) {
 	}
 
 	return plaintext, nil
-}
-
-// GenerateSessionToken creates a unique session token using HMAC-SHA256.
-func GenerateSessionToken(hmacKey []byte, counter uint32) []byte {
-	mac := hmac.New(sha256.New, hmacKey)
-	binary.Write(mac, binary.BigEndian, counter)
-	return mac.Sum(nil)[:TokenSize]
-}
-
-// VerifySessionToken verifies a session token.
-func VerifySessionToken(hmacKey []byte, token []byte, counter uint32) bool {
-	expected := GenerateSessionToken(hmacKey, counter)
-	return hmac.Equal(expected, token)
 }
 
 // GenerateSalt creates a random salt for key derivation.

@@ -100,6 +100,10 @@ make help           # Show all targets
 | 8447 | HTTP(S) | WebRTC signaling + data channels |
 | 9090 | HTTP | API + Dashboard |
 
+All transport ports are defaults; a deployment that moves them overrides the server
+keys (`transport.http_port` / `ws_port` / `webrtc_port` / `dns_port`) and the agent flags
+`-http-port` / `-ws-port` / `-webrtc-port` / `-dns-port` to match (round 3).
+
 ## Modules
 | Command | Description |
 |---------|-------------|

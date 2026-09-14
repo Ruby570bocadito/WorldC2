@@ -1,5 +1,63 @@
 # WorldC2 — Changelog
 
+## v1.4.0 — Round 3: hardened at-rest crypto, tunnel lifecycle, persistent webhooks, agent port flags (2026-09-15)
+
+Third maintenance round executed by the four-agent flow (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Reports live in `docs/agentes/`.
+
+### Added (Implementaciones)
+
+- **Agent transport ports are configurable without recompiling** — new CLI flags
+  `-http-port` / `-ws-port` / `-webrtc-port` / `-dns-port` (defaults 8445/8446/8447/8444,
+  matching `config.example.yaml`). Values are validated (`normalizePort`: digits only,
+  1-65535); empty values keep the defaults and invalid values are logged and fall back,
+  so a typo can never silently break a transport. Covered by unit tests for the
+  validator and the setter semantics, and verified end-to-end in the round's live
+  smoke (agent connected through the HTTP long-poll fallback on a non-default port
+  and executed a command with its result round-tripping).
+
+### Changed
+
+- **SIEM webhooks now persist across restarts** — `POST /api/webhooks` stores the
+  destination in the new `webhooks` table (migration 9) before activating it in the
+  forwarder, minting a random `wh-…` id (crypto/rand); the server re-hydrates all
+  persisted destinations into the SIEM forwarder on startup (`[SIEM] hydrated N
+  webhook(s)`). New `DELETE /api/webhooks?id=...` (admin) removes a destination from
+  both the forwarder and the database, answering 404 for unknown ids; POST now
+  answers 201 with `{"status":"added","id":...}` and additionally accepts optional
+  `headers` and `timeout_ms`. OpenAPI spec updated accordingly.
+- **Removed dead code** (`Pulimiento`): the unused agent-side `AgentProxy` (~80 lines,
+  `internal/socks`) and the unused HMAC pair `GenerateSessionToken`/`VerifySessionToken`
+  (`internal/crypto/keyx.go`, only ever referenced by their own tests) were pruned.
+  `Session.OnClose` was kept: this round wires it as the integration point for tunnel
+  teardown (below).
+
+### Fixed (Bugs/Seguridad)
+
+- **At-rest encryption key is now stretched (PBKDF2-HMAC-SHA256, 600 000 iterations,
+  per-database salt)** — previously the AES-256-GCM column key was a bare
+  `sha256(masterKey)`, letting a weak operator key be brute-forced at GPU speed.
+  The salt is generated once and persisted in the new `_kdf_meta` table (migration 10),
+  so the derived key is stable across restarts. New ciphertext carries a `v2.` version
+  prefix; legacy (un-stretched) values remain readable, so existing encrypted databases
+  keep working transparently. Covered by new tests: v2 roundtrip + prefix, legacy
+  compat through the v2 encryptor, wrong-key and wrong-salt rejection, salt stability
+  across reopens, and an end-to-end open→write→read-raw test proving on-disk values
+  are `v2.`.
+- **Abandoned tunnels no longer leak** — tunnels were only removed on an explicit
+  close or a wire error; one whose session died otherwise stayed in the map forever.
+  `TunnelManager` now tracks last activity per tunnel (either direction), watches each
+  admitted session via `Session.OnClose` (a session close tears down its tunnels
+  locally immediately) and runs a reaper (30 s sweep, 15 min idle timeout) for tunnels
+  whose session went stale without closing. Covered by new race-tested unit tests.
+
+### Documentation
+
+- README feature table gained the SIEM webhooks row and the Known-gaps block was
+  rewritten for the round; QUICK_REFERENCE ports section documents the new agent
+  flags; DEVELOPER_GUIDE documents the flag semantics and the webhook API surface;
+  CHANGELOG entry v1.4.0 (this one).
+
 ## v1.3.0 — Agent round 2: HTTP long-poll transport repaired end-to-end (2026-09-15)
 
 Second maintenance round executed by the four-agent flow (Director → Implementaciones →

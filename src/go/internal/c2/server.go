@@ -248,6 +248,11 @@ func New(cfg *config.Config, database *db.DB) *Server {
 
 // Start begins listening on all configured transports.
 func (s *Server) Start() error {
+	// Tunnel reaper: closes tunnels whose session died or that have been
+	// idle beyond tunnelIdleTimeout, so the tunnels map cannot grow
+	// without bound during long missions. Runs for the server lifetime.
+	s.tunnels.StartReaper(s.quit)
+
 	// Exfil chunked-upload assembler. Resume requests are delivered to
 	// the agent as tasks (__exfil_resume) through the normal task queue.
 	// CreateTask BLOCKS until the task result arrives, so it must never
@@ -792,6 +797,10 @@ func (s *Server) handleConnection(conn net.Conn, transportName string) {
 	}
 
 	sess.SetState(session.StateActive)
+
+	// Tie the session lifetime to its tunnels: when this session closes,
+	// every tunnel it carries is torn down locally (tunnel reaper).
+	s.tunnels.WatchSession(sess)
 
 	s.db.UpsertSession(&db.SessionRecord{
 		ID: sess.ID, AgentID: sess.AgentID, Hostname: sess.Hostname,

@@ -40,26 +40,31 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🔌 Modular task system | ✅ Working | Protobuf envelopes, dynamic module push; manifests HMAC-signed on registration and re-verified before every push (tampered manifests rejected) |
 | 📁 Loot storage | ✅ Working | Session-scoped file storage with traversal protection |
 | 🌐 SOCKS5 / port-forward tunnels | ✅ Working | TCP relaying through agents |
-| 🗄️ SQLite storage | ✅ Working | Transactional migrations; optional AES-256-GCM at-rest encryption for secrets (`WORLDC2_MASTER_KEY`) |
+| 🗄️ SQLite storage | ✅ Working | Transactional migrations; optional AES-256-GCM at-rest encryption for secrets (`WORLDC2_MASTER_KEY`) with PBKDF2-stretched key + per-DB salt (legacy ciphertext still readable) |
 | 🐳 Docker packaging | ✅ Working | Multi-stage build, non-root runtime user, healthcheck |
 | 🔄 DNS transport | ✅ Working | TXT tunneling integrated in the agent fallback chain (opt-in: `worldc2-agent -dns-domain your.domain`) |
 | 🕸️ WebRTC transport | ✅ Working | Pion data channels with HTTP signaling (port 8447), detached channel adapted as `net.Conn`; covered by a loopback roundtrip test |
 | 📈 Resumable file exfil | ✅ Working | `exfil:<path>` streams chunked uploads; server reassembles, survives reconnects/restarts and resumes from the exact byte via `__exfil_resume` tasks |
+| 🔔 SIEM webhooks | ✅ Working | `POST/GET/DELETE /api/webhooks` (admin); destinations are **persisted** (migration 9) and re-hydrated on server start |
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
 >
-> **Known gaps (round 2 audit):**
+> **Known gaps (round 3 audit):**
 > - The HTTP long-poll transport (port 8445) was **repaired in round 2** and is now part of the
 >   agent fallback chain (`TLS → TCP → HTTP → WebSocket → WebRTC → DNS`); it carries the same
 >   length-prefixed envelope framing over `POST /register` (agent→server) and `POST /poll`
 >   (long-poll, server→agent). Covered by loopback tests, including concurrent read/write and
->   multi-megabyte frames.
+>   multi-megabyte frames. The fallback ports are overridable without recompiling via
+>   `-http-port` / `-ws-port` / `-webrtc-port` / `-dns-port` (round 3).
 > - The agent **auto-installs persistence** on first run (cron/bashrc, registry/schtasks,
 >   LaunchAgent depending on OS); in authorized labs run it with `-no-persist` to disable that
 >   behavior.
-> - Anti-replay by envelope sequence number, a reaper for abandoned tunnels/exfil transfers and
->   an upgraded at-rest KDF remain open items tracked in the agent reports.
+> - Anti-replay by envelope sequence number and refresh-token rotation (`jti`) remain open items
+>   tracked in the agent reports. Round 3 closed the tunnel/exfil reaper gap (tunnels now tear
+>   down on session close and are reaped after 15 min idle) and upgraded the at-rest KDF:
+>   with `WORLDC2_MASTER_KEY` set, new writes use PBKDF2-HMAC-SHA256 (600 000 iterations,
+>   per-database salt in `_kdf_meta`) while legacy ciphertext stays readable.
 
 ---
 

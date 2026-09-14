@@ -36,6 +36,9 @@
 The envelope flow below is identical on every listener. The agent's fallback chain is
 `TLS (8443) → TCP (8443) → HTTP long-poll (8445) → WebSocket (8446) → WebRTC (8447) → DNS (opt-in)`;
 all five carry the same length-prefixed protobuf envelopes, so sessions are transport-agnostic.
+The four fallback ports are defaults: non-default deployments pass matching
+`-http-port` / `-ws-port` / `-webrtc-port` / `-dns-port` flags to the agent (validated, and
+silently-rejected-with-log values fall back to the defaults — see `normalizePort`).
 
 ### 1. Connection & Key Exchange
 
@@ -175,7 +178,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | POST | `/api/lock` | Yes | Lock/unlock session (`collab:write`) |
 | GET/POST | `/api/profiles` | Yes | Agent config profiles (`collab:write`) |
 | GET | `/api/report` | Yes | Generate engagement report (`report:generate`) |
-| GET/POST | `/api/webhooks` | Admin | SIEM webhook destinations |
+| GET/POST/DELETE | `/api/webhooks` | Admin | SIEM webhook destinations (persisted in `webhooks`, migration 9; re-hydrated on start; DELETE takes `?id=...` from the POST response) |
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate |
 | GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator (revokes their JWTs) |
 

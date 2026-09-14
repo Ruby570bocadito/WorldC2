@@ -13,6 +13,7 @@ import (
 
 // WebhookConfig holds webhook notification settings.
 type WebhookConfig struct {
+	ID      string // stable identifier (persisted in the webhooks table)
 	URL     string
 	Headers map[string]string
 	Timeout time.Duration
@@ -66,6 +67,20 @@ func (sf *SIEMForwarder) ListWebhooks() []WebhookConfig {
 	out := make([]WebhookConfig, len(sf.webhooks))
 	copy(out, sf.webhooks)
 	return out
+}
+
+// RemoveWebhook deletes the webhook with the given ID. It returns false when
+// no webhook matches, so DELETE /api/webhooks can answer 404 precisely.
+func (sf *SIEMForwarder) RemoveWebhook(id string) bool {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	for i, wh := range sf.webhooks {
+		if wh.ID == id {
+			sf.webhooks = append(sf.webhooks[:i], sf.webhooks[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // Forward queues an event for forwarding.

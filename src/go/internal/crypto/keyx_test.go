@@ -100,23 +100,6 @@ func TestDecryptWrongKey(t *testing.T) {
 	}
 }
 
-func TestSessionToken(t *testing.T) {
-	hmacKey := make([]byte, 32)
-
-	token := GenerateSessionToken(hmacKey, 1)
-	if len(token) != TokenSize {
-		t.Errorf("Token size = %d, want %d", len(token), TokenSize)
-	}
-
-	if !VerifySessionToken(hmacKey, token, 1) {
-		t.Error("VerifySessionToken() should return true for valid token")
-	}
-
-	if VerifySessionToken(hmacKey, token, 2) {
-		t.Error("VerifySessionToken() should return false for wrong counter")
-	}
-}
-
 func TestGenerateSalt(t *testing.T) {
 	salt1, err := GenerateSalt()
 	if err != nil {

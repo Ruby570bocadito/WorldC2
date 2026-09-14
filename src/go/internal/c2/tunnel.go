@@ -35,12 +35,93 @@ type Tunnel struct {
 	chMu    sync.Mutex
 	bytesRx uint64
 	bytesTx uint64
+
+	// lastActiveNano tracks the last observed activity (data either way).
+	// The reaper uses it to close tunnels whose session died or went idle,
+	// so the tunnels map cannot grow without bound across a long mission.
+	lastActiveNano atomic.Int64
 }
 
 // NewTunnelManager creates a tunnel manager.
 func NewTunnelManager() *TunnelManager {
 	return &TunnelManager{
 		tunnels: make(map[string]*Tunnel),
+	}
+}
+
+// Reaper tuning: how often the reaper sweeps and how long a tunnel may stay
+// without any data in either direction before it is considered abandoned.
+const (
+	tunnelReapInterval = 30 * time.Second
+	tunnelIdleTimeout  = 15 * time.Minute
+)
+
+// StartReaper launches the background sweep that closes abandoned tunnels.
+// Without it, a tunnel whose session died outside a wire error (server
+// restart edge, killed agent mid-transfer) would stay in the map forever:
+// every Write would fail with "send envelope" errors and the entry would
+// never be collected. Wired to the server lifetime via quit.
+func (tm *TunnelManager) StartReaper(quit <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(tunnelReapInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-quit:
+				return
+			case <-ticker.C:
+				tm.reapOnce()
+			}
+		}
+	}()
+}
+
+// reapOnce closes tunnels that are idle beyond tunnelIdleTimeout. Activity is
+// ANY data movement in either direction (SendData / HandleTunnelResult); the
+// heartbeat of the underlying session does not count as tunnel activity.
+func (tm *TunnelManager) reapOnce() {
+	now := time.Now()
+	tm.mu.RLock()
+	stale := make([]*Tunnel, 0, 4)
+	for _, t := range tm.tunnels {
+		if now.Sub(time.Unix(0, t.lastActiveNano.Load())) > tunnelIdleTimeout {
+			stale = append(stale, t)
+		}
+	}
+	tm.mu.RUnlock()
+
+	for _, t := range stale {
+		log.Printf("[TUNNEL] Reaper closing idle tunnel %s (target %s, idle > %s)",
+			t.ID, t.Target, tunnelIdleTimeout)
+		tm.Close(t.ID)
+	}
+}
+
+// WatchSession ties a session's lifetime to its tunnels: when the session
+// closes (agent disconnect, kill, stale reap) its tunnels are closed locally
+// immediately — without waiting for the idle reaper or a failing wire write.
+// The session package cannot import c2, so the hook is registered from here.
+func (tm *TunnelManager) WatchSession(sess *session.Session) {
+	sess.OnClose(func() { tm.closeSessionTunnels(sess.ID) })
+}
+
+// closeSessionTunnels closes every tunnel belonging to the given session.
+// Used on session close: the transport is gone, so notifying the agent is
+// pointless — tunnels are torn down locally only.
+func (tm *TunnelManager) closeSessionTunnels(sessionID string) {
+	tm.mu.RLock()
+	var doomed []*Tunnel
+	for _, t := range tm.tunnels {
+		if t.Session != nil && t.Session.ID == sessionID {
+			doomed = append(doomed, t)
+		}
+	}
+	tm.mu.RUnlock()
+
+	for _, t := range doomed {
+		log.Printf("[TUNNEL] Session %s closed; tearing down tunnel %s (target %s)",
+			sessionID, t.ID, t.Target)
+		tm.closeLocal(t)
 	}
 }
 
@@ -67,6 +148,7 @@ func (tm *TunnelManager) OpenTunnel(sess *session.Session, target string) (net.C
 		closeCh: make(chan struct{}),
 	}
 	t.running.Store(true)
+	t.lastActiveNano.Store(time.Now().UnixNano())
 
 	tm.mu.Lock()
 	tm.tunnels[id] = t
@@ -113,6 +195,7 @@ func (tm *TunnelManager) HandleTunnelResult(result *proto.TaskResult) {
 	if !ok {
 		return
 	}
+	t.lastActiveNano.Store(time.Now().UnixNano())
 
 	switch {
 	case strings.HasPrefix(output, "tunnel_data:"):
@@ -155,6 +238,7 @@ func (tm *TunnelManager) SendData(tunnelID string, data []byte) error {
 	if !ok || !t.running.Load() {
 		return fmt.Errorf("tunnel not found or closed")
 	}
+	t.lastActiveNano.Store(time.Now().UnixNano())
 
 	encoded := base64.StdEncoding.EncodeToString(data)
 	cmd := fmt.Sprintf("tunnel_data:%s:%s", tunnelID, encoded)
@@ -178,15 +262,7 @@ func (tm *TunnelManager) Close(id string) {
 		return
 	}
 
-	t.chMu.Lock()
-	alreadyClosed := !t.running.CompareAndSwap(true, false)
-	if !alreadyClosed {
-		close(t.closeCh)
-		close(t.dataCh)
-	}
-	t.chMu.Unlock()
-
-	if alreadyClosed {
+	if !tm.closeLocal(t) {
 		return
 	}
 
@@ -199,6 +275,27 @@ func (tm *TunnelManager) Close(id string) {
 		}
 		t.Session.SendEnvelope(proto.EnvelopeType_ENVELOPE_TYPE_TASK, task)
 	}
+}
+
+// closeLocal performs the local teardown (map-free: removes the tunnel from
+// the registry, closes its channels exactly once). It returns false when the
+// tunnel was already torn down. Session-close teardown reuses this because a
+// dead session cannot receive a tunnel_close frame anyway.
+func (tm *TunnelManager) closeLocal(t *Tunnel) bool {
+	tm.mu.Lock()
+	if cur, ok := tm.tunnels[t.ID]; ok && cur == t {
+		delete(tm.tunnels, t.ID)
+	}
+	tm.mu.Unlock()
+
+	t.chMu.Lock()
+	alreadyClosed := !t.running.CompareAndSwap(true, false)
+	if !alreadyClosed {
+		close(t.closeCh)
+		close(t.dataCh)
+	}
+	t.chMu.Unlock()
+	return !alreadyClosed
 }
 
 // --- tunnelConn implements net.Conn over C2 tunnel ---

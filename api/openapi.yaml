@@ -745,15 +745,98 @@ paths:
         - BearerAuth: []
       responses:
         '200':
-          description: List of webhooks
+          description: List of webhooks (persisted; they survive server restarts)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      description: Stable webhook ID used by DELETE /api/webhooks
+                    url:
+                      type: string
+                    headers:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    timeout:
+                      type: number
+                      description: Forwarding timeout in nanoseconds (Go duration)
+                    events:
+                      type: array
+                      items:
+                        type: string
     post:
       summary: Register a webhook (admin only)
+      description: >-
+        Registers and PERSISTS a webhook destination (webhooks table,
+        migration 9). It is re-hydrated into the SIEM forwarder on server
+        start, so destinations survive restarts.
       tags: [Webhooks]
       security:
         - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  description: Absolute http(s) callback URL
+                headers:
+                  type: object
+                  additionalProperties:
+                    type: string
+                timeout_ms:
+                  type: integer
+                  description: Forwarding timeout in milliseconds (0 = forwarder default)
+                events:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: Webhook registered and persisted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  id:
+                    type: string
+                    description: Webhook ID (pass it to DELETE /api/webhooks?id=...)
+        '400':
+          description: Invalid JSON or non-absolute/non-http(s) URL
+        '500':
+          description: Failed to persist the webhook
+    delete:
+      summary: Delete a webhook (admin only)
+      description: Removes the destination from the forwarder and the database.
+      tags: [Webhooks]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Webhook ID returned by POST /api/webhooks
       responses:
         '200':
-          description: Webhook registered
+          description: Webhook deleted ({"deleted": true})
+        '400':
+          description: Missing id query parameter
+        '404':
+          description: Unknown webhook id
 
   /api/mtls/cert:
     post:

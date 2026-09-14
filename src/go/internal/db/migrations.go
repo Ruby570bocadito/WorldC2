@@ -210,6 +210,36 @@ func Migrations() []Migration {
                                 DROP TABLE IF EXISTS agent_profiles;
                         `,
 		},
+		{
+			Version: 9,
+			Name:    "persist_webhooks",
+			Up: `
+                                CREATE TABLE IF NOT EXISTS webhooks (
+                                        id TEXT PRIMARY KEY,
+                                        url TEXT NOT NULL,
+                                        headers TEXT NOT NULL DEFAULT '{}',
+                                        timeout_ms INTEGER NOT NULL DEFAULT 0,
+                                        events TEXT NOT NULL DEFAULT '[]',
+                                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                                );
+                        `,
+			Down: `
+                                DROP TABLE IF EXISTS webhooks;
+                        `,
+		},
+		{
+			Version: 10,
+			Name:    "kdf_salt_meta",
+			Up: `
+                                CREATE TABLE IF NOT EXISTS _kdf_meta (
+                                        key TEXT PRIMARY KEY,
+                                        value TEXT NOT NULL
+                                );
+                        `,
+			Down: `
+                                DROP TABLE IF EXISTS _kdf_meta;
+                        `,
+		},
 	}
 }
 

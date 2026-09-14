@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/auth"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/c2"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/config"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/db"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/handlers"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/siem"
 )
 
 func main() {
@@ -103,6 +105,26 @@ func main() {
 
 	// Create and start server
 	server := c2.New(cfg, database)
+
+	// Re-hydrate persisted SIEM webhook destinations (migration 9) into the
+	// forwarder so webhook delivery survives server restarts. Order is safe:
+	// the forwarder only delivers when events fire, never during hydration.
+	if webhooks, err := database.ListWebhooks(); err != nil {
+		log.Printf("[SIEM] hydrate webhooks: %v", err)
+	} else {
+		for _, wr := range webhooks {
+			server.SIEM().AddWebhook(siem.WebhookConfig{
+				ID:      wr.ID,
+				URL:     wr.URL,
+				Headers: wr.Headers,
+				Timeout: time.Duration(wr.TimeoutMS) * time.Millisecond,
+				Events:  wr.Events,
+			})
+		}
+		if len(webhooks) > 0 {
+			log.Printf("[SIEM] hydrated %d persisted webhook(s)", len(webhooks))
+		}
+	}
 
 	// Wire up REST API handlers (separate package to avoid circular imports)
 	router := handlers.NewRouter(server, cfg.Server.TrustedProxies)
