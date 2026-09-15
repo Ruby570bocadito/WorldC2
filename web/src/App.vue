@@ -87,6 +87,7 @@ import {
   IconProfiles,
   IconWebhook,
   IconOperators,
+  IconKey,
   IconLogout,
   IconMenu,
 } from './components/icons.js'
@@ -99,6 +100,7 @@ const NAV = [
   { to: '/modules', label: 'Modules', icon: IconModules },
   { to: '/profiles', label: 'Profiles', icon: IconProfiles },
   { to: '/files', label: 'Files', icon: IconFiles },
+  { to: '/vault', label: 'Vault', icon: IconKey },
   { to: '/webhooks', label: 'Webhooks', icon: IconWebhook },
   { to: '/operators', label: 'Operators', icon: IconOperators },
 ]
@@ -115,6 +117,7 @@ export default {
     IconProfiles,
     IconWebhook,
     IconOperators,
+    IconKey,
     IconLogout,
     IconMenu,
   },

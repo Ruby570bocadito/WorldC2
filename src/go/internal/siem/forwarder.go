@@ -20,10 +20,26 @@ type WebhookConfig struct {
 	Events  []string // Event types to forward
 }
 
+// WebhookStats is the per-destination delivery ledger exposed by
+// GET /api/webhooks since round 15. Before it, an operator had no way to
+// tell whether a webhook was firing: a wrong URL or a blocked egress just
+// logged to the server console and the event was silently lost.
+// LastStatus caps the failure text so a huge error body can't inflate the
+// API response.
+type WebhookStats struct {
+	Delivered    int64  `json:"delivered"`
+	Failed       int64  `json:"failed"`
+	LastDelivery string `json:"last_delivery"` // RFC3339, "" if never attempted
+	LastStatus   string `json:"last_status"`   // "ok" or "error: ..." (capped)
+}
+
+const maxLastStatusLen = 200
+
 // SIEMForwarder forwards events to external SIEM systems.
 type SIEMForwarder struct {
 	mu       sync.Mutex
 	webhooks []WebhookConfig
+	stats    map[string]*WebhookStats
 	queue    chan SIEMEvent
 	quit     chan struct{}
 	wg       sync.WaitGroup
@@ -42,6 +58,7 @@ func NewSIEMForwarder(bufferSize int) *SIEMForwarder {
 	sf := &SIEMForwarder{
 		queue: make(chan SIEMEvent, bufferSize),
 		quit:  make(chan struct{}),
+		stats: make(map[string]*WebhookStats),
 	}
 
 	// Start background forwarder
@@ -56,6 +73,10 @@ func (sf *SIEMForwarder) AddWebhook(cfg WebhookConfig) {
 	sf.mu.Lock()
 	defer sf.mu.Unlock()
 	sf.webhooks = append(sf.webhooks, cfg)
+	if sf.stats == nil {
+		sf.stats = make(map[string]*WebhookStats)
+	}
+	sf.stats[cfg.ID] = &WebhookStats{}
 }
 
 // ListWebhooks returns a copy of the registered webhook destinations. It backs
@@ -69,14 +90,53 @@ func (sf *SIEMForwarder) ListWebhooks() []WebhookConfig {
 	return out
 }
 
+// Stats returns a copy of the per-webhook delivery ledger. Destinations
+// never attempted (no matching event since start) carry zero values.
+func (sf *SIEMForwarder) Stats() map[string]WebhookStats {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	out := make(map[string]WebhookStats, len(sf.stats))
+	for id, s := range sf.stats {
+		out[id] = *s
+	}
+	return out
+}
+
+// recordResult folds a delivery attempt into the destination's ledger.
+func (sf *SIEMForwarder) recordResult(id string, err error) {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	s, ok := sf.stats[id]
+	if !ok {
+		// Delivery for a destination removed mid-flight: keep the outcome
+		// off the ledger instead of re-creating an entry for a dead ID.
+		return
+	}
+	if err != nil {
+		s.Failed++
+		s.LastStatus = "error: " + err.Error()
+		if len(s.LastStatus) > maxLastStatusLen {
+			s.LastStatus = s.LastStatus[:maxLastStatusLen]
+		}
+	} else {
+		s.Delivered++
+		s.LastStatus = "ok"
+	}
+	s.LastDelivery = time.Now().UTC().Format(time.RFC3339)
+}
+
 // RemoveWebhook deletes the webhook with the given ID. It returns false when
 // no webhook matches, so DELETE /api/webhooks can answer 404 precisely.
+// The delivery ledger goes with the destination: keeping stats for a
+// deleted ID would leak memory and resurrect stale counters if the ID was
+// ever reused.
 func (sf *SIEMForwarder) RemoveWebhook(id string) bool {
 	sf.mu.Lock()
 	defer sf.mu.Unlock()
 	for i, wh := range sf.webhooks {
 		if wh.ID == id {
 			sf.webhooks = append(sf.webhooks[:i], sf.webhooks[i+1:]...)
+			delete(sf.stats, id)
 			return true
 		}
 	}
@@ -126,9 +186,11 @@ func (sf *SIEMForwarder) sendEvent(event SIEMEvent) {
 		}
 
 		go func(wh WebhookConfig) {
-			if err := sf.sendToWebhook(wh, event); err != nil {
+			err := sf.sendToWebhook(wh, event)
+			if err != nil {
 				log.Printf("[SIEM] Failed to send to webhook %s: %v", wh.URL, err)
 			}
+			sf.recordResult(wh.ID, err)
 		}(wh)
 	}
 }

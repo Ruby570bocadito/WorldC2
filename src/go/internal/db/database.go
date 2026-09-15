@@ -638,13 +638,22 @@ func (d *DB) SearchCredentials(query string) ([]CredentialRecord, error) {
 	return creds, rows.Err()
 }
 
-// DeleteCredential removes a credential by ID.
-func (d *DB) DeleteCredential(id string) error {
+// DeleteCredential removes a credential by ID and reports whether a row
+// was actually deleted (the caller answers 404 precisely instead of
+// claiming success for an ID that never existed).
+func (d *DB) DeleteCredential(id string) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`DELETE FROM credentials WHERE id=?`, id)
-	return err
+	res, err := d.conn.Exec(`DELETE FROM credentials WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // CountCredentials returns the number of stored credentials.

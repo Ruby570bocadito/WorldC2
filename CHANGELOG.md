@@ -1,5 +1,71 @@
 # WorldC2 — Changelog
 
+## v1.16.0 — Round 15: dedicated vault console, webhook delivery ledger, report time window, multi-header webhook form (2026-09-15)
+
+Fifteenth round, single-agent flow, deliberately **implementation-heavy** by
+operator request: the Implementaciones role ships four features (double the
+usual cap) taken from the r13/r14 backlogs, and the Bug/Security role closes
+three vault-integrity findings that the new view put under the spotlight.
+
+### Added (Implementaciones)
+
+- **Dedicated Credential Vault console view** — the Dashboard only showed a
+  count and the API had no way to remove loot; a new `/vault` route ships a
+  searchable table (`?q=` with 250 ms debounce), an add form whose field
+  caps mirror the server-side validation, password reveal toggles and an
+  admin-only delete button. Wired into the nav (`IconKey`) and the Vue
+  router.
+- **DELETE /api/vault?id=...** — the `vault:delete` permission existed in
+  rbac.go since day one but no endpoint exercised it; the router now maps
+  GET→`vault:read`, POST→`vault:create`, DELETE→`vault:delete` (via a new
+  `vaultPerms` wrapper — the generic two-level `permByMethod` cannot express
+  three privileges). Unknown ids answer 404, operators answer 403, both
+  pinned by tests.
+- **Per-webhook delivery ledger** — the SIEM forwarder now records, per
+  destination, `delivered` / `failed` counters plus `last_delivery`
+  (RFC3339) and `last_status` (`"ok"` or `"error: ..."`, capped at 200
+  chars). Exposed by `GET /api/webhooks` (`stats` object) and rendered as
+  ok/failed badges in the console Webhooks view — an operator can finally
+  see whether a webhook actually fires. Removing a webhook drops its
+  ledger; in-flight deliveries for removed ids are not recorded. Pinned by
+  `TestForwarderStatsLedger`.
+- **`?days=N` time window on the engagement report** — 1–90 (default 1 =
+  the old fixed 24 h). It **filters**: sessions last seen and credentials
+  captured before the cutoff are excluded and the summary counts describe
+  the filtered report (they were seeded pre-filter). The Dashboard report
+  button grows a compact days input; out-of-range or non-integer values
+  answer 400. Pinned by `TestReportDaysWindow` (fresh + backdated rows).
+- **Multi-header webhook form** — the console Webhooks form replaces its
+  single `name:value` input with a dynamic list (add/remove rows, ≤ 16,
+  duplicate detection, per-field maxlengths matching the API caps); the
+  table shows each destination's delivery stats.
+
+### Fixed (Bugs/Seguridad)
+
+- **Vault persistence failures were silently swallowed** —
+  `CredentialVault.Add` logged the DB error and returned an ID anyway, so
+  `POST /api/vault` answered `{"status":"stored"}` for credentials that
+  were never saved (the vault has no in-memory copy; SQLite is the only
+  storage). `Add` now returns the error and the handler answers 500 — the
+  same persist-first discipline the webhook route already had.
+- **Credential IDs were predictable and collision-prone** —
+  `cred-<UnixNano>` was guessable for the most sensitive loot in the vault
+  and could collide when two adds landed in the same nanosecond; replaced
+  with crypto/rand `cred-<24 hex>` (same discipline as `newWebhookID`).
+  `TestVaultAddIDsAreUniqueUnderBurst` fires 200 concurrent adds.
+- **`?q=` search term was unbounded** — the residual from the round-14
+  transversal pass: the search runs in Go over decrypted rows, so a
+  megabyte-long query forced that work per request. Terms over 256
+  characters answer 400 (`TestVaultSearchCap`).
+
+### Fixed (Pulimiento)
+
+- **`api/openapi.yaml` was not parseable YAML** — the DELETE-webhook
+  description contained an unquoted `({"deleted": true})`, which the YAML
+  scanner rejects ("mapping values are not allowed here"). Every round
+  claimed spec alignment without ever parsing it; a `yaml.safe_load` check
+  now exists in this round's verification, and the file parses clean.
+
 ## v1.15.0 — Round 14: report content delivery, report format selector, SIEM forwarder E2E tests, transversal validation part 2 (2026-09-15)
 
 Fourteenth round, first executed by the single-agent flow (one IA playing

@@ -114,7 +114,7 @@ func (r *Router) Setup() *http.ServeMux {
 
 	// Infrastructure
 	mux.HandleFunc("/api/socks", cors(auth(audit(rate(perm("socks:start")(r.handleSOCKS))))))
-	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.permByMethod("vault:read", "vault:create")(r.handleVault))))))
+	mux.HandleFunc("/api/vault", cors(auth(audit(rate(r.vaultPerms(r.handleVault))))))
 	mux.HandleFunc("/api/files", cors(auth(audit(rate(r.filesPerm(r.handleFiles))))))
 	mux.HandleFunc("/api/files/download/", cors(auth(audit(rate(perm("files:download")(r.handleFileDownload))))))
 	mux.HandleFunc("/api/files/", cors(auth(audit(rate(perm("files:delete")(r.handleFileDelete))))))
@@ -296,6 +296,30 @@ func (r *Router) permByMethod(readPerm, mutatingPerm string) func(http.HandlerFu
 			}
 			r.requirePermission(p)(next)(w, req)
 		}
+	}
+}
+
+// vaultPerms maps the vault endpoint to its three distinct permissions.
+// permByMethod only speaks two levels, and DELETE is a different privilege
+// (vault:delete, admin-only — permanent removal of loot) from POST
+// (vault:create): the generic wrapper would have required vault:create to
+// delete and never exercised vault:delete at all. Unsupported methods
+// answer 405 before any permission check, matching the handler switch.
+func (r *Router) vaultPerms(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var p string
+		switch req.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			p = "vault:read"
+		case http.MethodPost:
+			p = "vault:create"
+		case http.MethodDelete:
+			p = "vault:delete"
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, 405)
+			return
+		}
+		r.requirePermission(p)(next)(w, req)
 	}
 }
 

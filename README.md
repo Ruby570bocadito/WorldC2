@@ -47,8 +47,9 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🕸️ WebRTC transport | ✅ Working | Pion data channels with HTTP signaling (port 8447), detached channel adapted as `net.Conn`; covered by a loopback roundtrip test |
 | 📈 Resumable file exfil | ✅ Working | `exfil:<path>` streams chunked uploads; server reassembles, survives reconnects/restarts and resumes from the exact byte via `__exfil_resume` tasks |
 | 🎛️ Agent profiles | ✅ Working | Beacon cadence / jitter / transport presets with server-side validation (name, interval, jitter ranges and a transport allowlist) and honest 404 deletes (`GET/POST /api/profiles`, `DELETE /api/profiles/:id`); managed from the console Profiles view |
-| 🔔 SIEM webhooks | ✅ Working | `POST/GET/DELETE /api/webhooks` (admin); destinations are **persisted** (migration 9) and re-hydrated on server start; creation validates URL length, header caps, a real forwarding timeout (100–60000 ms) and the event-type allowlist; managed from the console Webhooks view |
-| 📈 Engagement report | ✅ Working | `GET /api/report?format=text|csv|json` (`report:generate`) compiles sessions, tasks and loot into a report — `&download=1` serves the report **content** as an attachment (the Dashboard button ships a format selector: Text/CSV/JSON); unknown formats answer 400 |
+| 🗝️ Credential vault console | ✅ Working | Dedicated **Vault view** (round 15): search as you type (`GET /api/vault?q=`, capped at 256 chars), add with API-mirrored field caps, password reveal toggles and admin-only deletes (`DELETE /api/vault?id=`, `vault:delete`) — IDs are crypto/rand, not time-derived |
+| 🔔 SIEM webhooks | ✅ Working | `POST/GET/DELETE /api/webhooks` (admin); destinations are **persisted** (migration 9) and re-hydrated on server start; creation validates URL length, header caps (the form supports **multiple** custom headers), a real forwarding timeout (100–60000 ms) and the event-type allowlist; the listing carries a **per-destination delivery ledger** (`stats`: delivered/failed/last_delivery/last_status) surfaced as badges in the console Webhooks view |
+| 📈 Engagement report | ✅ Working | `GET /api/report?format=text|csv|json&days=1..90` (`report:generate`) compiles sessions, tasks and loot into a report — `&download=1` serves the report **content** as an attachment (the Dashboard button ships a format selector plus a **days window** that genuinely filters rows); unknown formats and out-of-range windows answer 400 |
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
@@ -91,6 +92,10 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | Profiles | Webhooks (SIEM) |
 |----------|------------------|
 | ![Profiles](docs/assets/profiles.png) | ![Webhooks](docs/assets/webhooks.png) |
+
+| Credential Vault |
+|------------------|
+| ![Vault](docs/assets/vault.png) |
 
 ---
 

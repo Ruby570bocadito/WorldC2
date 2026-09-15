@@ -239,6 +239,9 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 /* Compact select variant for toolbars/page-head (matches .btn-sm). */
 .select-sm { height: 28px; font-size: 12px; padding-right: 28px; width: auto; }
 
+/* Compact number input for toolbars/page-head (report days, matches .btn-sm/.select-sm). */
+.input-sm { height: 28px; font-size: 12px; width: 64px; padding: 0 8px; }
+
 .field-label {
   display: block;
   font-size: 12px;

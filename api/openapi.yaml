@@ -404,7 +404,8 @@ paths:
           in: query
           schema:
             type: string
-          description: Search query
+            maxLength: 256
+          description: Search query (max 256 characters; longer queries answer 400)
       responses:
         '200':
           description: List of credentials
@@ -428,6 +429,25 @@ paths:
       responses:
         '200':
           description: Credential stored
+    delete:
+      summary: Delete a credential (vault:delete required, admin only)
+      tags: [Vault]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Credential ID (cred-...)
+      responses:
+        '200':
+          description: Credential deleted
+        '403':
+          description: Insufficient permissions (vault:delete)
+        '404':
+          description: Credential not found
 
   /api/files:
     get:
@@ -881,6 +901,14 @@ paths:
             type: string
             enum: ["1"]
           description: When "1", the report CONTENT is served as an attachment (Content-Disposition, format-appropriate Content-Type). Without it the response is the JSON envelope {path, status}.
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 1
+          description: Report window in days (round 15). FILTERS the content — sessions last seen and credentials captured within the window — and stamps StartDate accordingly; it does not merely relabel dates. Out-of-range or non-integer values answer 400.
       responses:
         '200':
           description: >
@@ -935,6 +963,22 @@ paths:
                       type: array
                       items:
                         type: string
+                    stats:
+                      type: object
+                      description: Per-destination delivery ledger (round 15)
+                      properties:
+                        delivered:
+                          type: number
+                          description: Successful forwarding attempts
+                        failed:
+                          type: number
+                          description: Failed forwarding attempts (HTTP >= 400 or transport error)
+                        last_delivery:
+                          type: string
+                          description: RFC3339 timestamp of the last attempt (empty if never attempted)
+                        last_status:
+                          type: string
+                          description: '"ok" or "error: ..." (capped at 200 characters)'
     post:
       summary: Register a webhook (admin only)
       description: >-
@@ -998,7 +1042,7 @@ paths:
           description: Webhook ID returned by POST /api/webhooks
       responses:
         '200':
-          description: Webhook deleted ({"deleted": true})
+          description: 'Webhook deleted ("deleted": true)'
         '400':
           description: Missing id query parameter
         '404':

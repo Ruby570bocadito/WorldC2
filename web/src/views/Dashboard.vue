@@ -6,6 +6,18 @@
         <p class="page-sub">Operational overview · refreshed every 5s</p>
       </div>
       <div class="head-side">
+        <input
+          v-if="canReport"
+          v-model.number="reportDays"
+          class="input input-sm"
+          type="number"
+          min="1"
+          max="90"
+          step="1"
+          aria-label="Report window in days"
+          title="Report window in days (1-90)"
+          :disabled="reportBusy"
+        />
         <select v-if="canReport" v-model="reportFormat" class="select select-sm" aria-label="Report format" :disabled="reportBusy">
           <option value="text">Text</option>
           <option value="csv">CSV</option>
@@ -188,6 +200,7 @@ export default {
       // engagement report
       reportBusy: false,
       reportFormat: 'text',
+      reportDays: 1,
     }
   },
   computed: {
@@ -279,10 +292,14 @@ export default {
       if (this.reportBusy) return
       this.reportBusy = true
       const fmt = ['text', 'csv', 'json'].includes(this.reportFormat) ? this.reportFormat : 'text'
+      // Window in days (1-90, default 1): the API rejects anything else with
+      // a 400, so clamp here and keep the report button forgiving.
+      const days = Math.min(90, Math.max(1, Math.round(Number(this.reportDays) || 1)))
       try {
-        // GET /api/report?format=<fmt>&download=1 (report:generate — admin/operator);
-        // download=1 makes the API serve the report content as an attachment.
-        await downloadFile(`/api/report?format=${fmt}&download=1`, `worldc2-report.${fmt === 'csv' ? 'csv' : fmt === 'json' ? 'json' : 'txt'}`)
+        // GET /api/report?format=<fmt>&days=<n>&download=1 (report:generate —
+        // admin/operator); days sets the report window, download=1 makes the
+        // API serve the report content as an attachment.
+        await downloadFile(`/api/report?format=${fmt}&days=${days}&download=1`, `worldc2-report.${fmt === 'csv' ? 'csv' : fmt === 'json' ? 'json' : 'txt'}`)
         notify.ok('Engagement report downloaded')
       } catch (e) {
         if (!e.expired) notify.error('Report failed: ' + e.message)

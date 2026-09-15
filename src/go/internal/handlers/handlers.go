@@ -399,12 +399,14 @@ func (r *Router) handleSOCKS(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"address": addr, "status": "started"})
 }
 
-// handleVault manages the credential vault.
+// handleVault manages the credential vault. Read (GET), create (POST) and
+// since round 15 delete (DELETE ?id=...) — the rbac.go permission
+// vault:delete existed since the first day but no endpoint exercised it.
+// Method/permission mapping lives in vaultPerms (router.go); the switch
+// here stays as defense in depth for callers wired outside the router.
 func (r *Router) handleVault(w http.ResponseWriter, req *http.Request) {
-	// Round-14 method hygiene: anything that is not a read or a create
-	// used to fall through to the listing (a PUT answered the full vault).
 	switch req.Method {
-	case http.MethodPost, http.MethodGet, http.MethodHead, http.MethodOptions:
+	case http.MethodPost, http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodDelete:
 	default:
 		http.Error(w, "method not allowed", 405)
 		return
@@ -423,11 +425,50 @@ func (r *Router) handleVault(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), 400)
 			return
 		}
-		id := r.server.Vault().Add(c)
+		// Round 15: Add surfaces persistence errors. It used to log the
+		// failure and hand back an ID anyway, and this handler answered
+		// {"status":"stored"} for a credential that was never saved —
+		// the vault has no in-memory copy, SQLite is the only storage.
+		id, err := r.server.Vault().Add(c)
+		if err != nil {
+			log.Printf("[API] persist credential: %v", err)
+			http.Error(w, "failed to store credential", 500)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "stored"})
 		return
 	}
+
+	if req.Method == http.MethodDelete {
+		// DELETE /api/vault?id=cred-... — permanent removal of loot, hence
+		// admin-only via vault:delete. 404 on unknown IDs, like webhooks.
+		id := req.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "missing credential id (?id=...)", 400)
+			return
+		}
+		deleted, err := r.server.Vault().Delete(id)
+		if err != nil {
+			log.Printf("[API] delete credential %s: %v", id, err)
+			http.Error(w, "failed to delete credential", 500)
+			return
+		}
+		if !deleted {
+			http.Error(w, "credential not found", 404)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
+		return
+	}
+
 	query := req.URL.Query().Get("q")
+	// Round 15: cap the search term (residual from the round-14 pass — the
+	// search runs in Go over decrypted rows, so a megabyte-long ?q= forced
+	// that work per request for no benefit).
+	if len(query) > 256 {
+		http.Error(w, `{"error":"q must be 256 characters or fewer"}`, 400)
+		return
+	}
 	if query != "" {
 		json.NewEncoder(w).Encode(r.server.Vault().Search(query))
 	} else {
@@ -837,6 +878,23 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Round 15: ?days=N sets the report window (default 1 = the previous
+	// fixed 24h). It FILTERS the content — sessions last seen and
+	// credentials captured within the window — not just the printed dates;
+	// a window that only changed labels would be a lie in a report meant
+	// to be handed to a client. Capped at 90 so the "full history" pull is
+	// always an explicit ?days=90 decision, never a fat-fingered number.
+	days := 1
+	if raw := req.URL.Query().Get("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 90 {
+			http.Error(w, `{"error":"days must be an integer between 1 and 90"}`, 400)
+			return
+		}
+		days = n
+	}
+	windowStart := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+
 	sessions, err := r.server.DB().ListAllSessions()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -858,7 +916,7 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	report := &reporting.EngagementReport{
 		Title:     "WORLDC2 C2 Engagement Report",
 		Operator:  operator,
-		StartDate: time.Now().Add(-24 * time.Hour),
+		StartDate: windowStart,
 		EndDate:   time.Now(),
 		Summary: reporting.ReportSummary{
 			TotalSessions:    len(sessions),
@@ -868,6 +926,9 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	}
 
 	for _, s := range sessions {
+		if s.LastSeen.Before(windowStart) {
+			continue
+		}
 		report.Sessions = append(report.Sessions, reporting.SessionReport{
 			ID: s.ID, AgentID: s.AgentID, Hostname: s.Hostname,
 			OS: s.OS, Arch: s.Arch, Username: s.Username,
@@ -882,12 +943,20 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	}
 
 	for _, c := range creds {
+		if c.Captured.Before(windowStart) {
+			continue
+		}
 		report.Credentials = append(report.Credentials, reporting.CredentialReport{
 			Username: c.Username, Password: c.Password, Domain: c.Domain,
 			Host: c.Host, Service: c.Service, Source: c.Source, Captured: c.Captured,
 		})
 	}
 
+	// The summary must describe the FILTERED report, not the whole
+	// database: TotalSessions/TotalCredentials were seeded before the
+	// window filter ran, so they'd count rows the reader won't find.
+	report.Summary.TotalSessions = len(report.Sessions)
+	report.Summary.TotalCredentials = len(report.Credentials)
 	report.Summary.UniqueHosts = len(report.Summary.UniqueOS)
 
 	var path string
@@ -957,6 +1026,7 @@ type webhookView struct {
 	Headers   map[string]string `json:"headers"`
 	TimeoutMS int64             `json:"timeout_ms"`
 	Events    []string          `json:"events"`
+	Stats     siem.WebhookStats `json:"stats"`
 }
 
 func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
@@ -1061,6 +1131,7 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 		// this endpoint as "List of webhooks". Mapped through webhookView
 		// so clients see timeout_ms instead of raw nanoseconds.
 		configs := r.server.SIEM().ListWebhooks()
+		stats := r.server.SIEM().Stats()
 		views := make([]webhookView, 0, len(configs))
 		for _, wh := range configs {
 			events := wh.Events
@@ -1071,12 +1142,14 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 			if headers == nil {
 				headers = map[string]string{}
 			}
+			// Zero-value stats for a destination with no attempts yet.
 			views = append(views, webhookView{
 				ID:        wh.ID,
 				URL:       wh.URL,
 				Headers:   headers,
 				TimeoutMS: wh.Timeout.Milliseconds(),
 				Events:    events,
+				Stats:     stats[wh.ID],
 			})
 		}
 		json.NewEncoder(w).Encode(views)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -163,5 +164,68 @@ func TestForwarderRejectsServerError(t *testing.T) {
 	sf.Forward(SIEMEvent{EventType: "operator_login", Source: "test"})
 	if ev, _ := rx.waitFor(t); ev.EventType != "operator_login" {
 		t.Fatalf("post-failure delivery = %+v", ev)
+	}
+}
+
+// statsFor reads the ledger for one destination with a bounded wait: the
+// delivery goroutine records the outcome after the receiver already saw the
+// POST, so the first read can legitimately lag the wire.
+func statsFor(t *testing.T, sf *SIEMForwarder, id string, want int64) WebhookStats {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := sf.Stats()[id]; s.Delivered+s.Failed >= want {
+			return s
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("stats for %s never reached %d recorded attempts", id, want)
+	return WebhookStats{}
+}
+
+// TestForwarderStatsLedger pins the round-15 delivery ledger: an accepted
+// POST counts as Delivered with last_status "ok", a 500 counts as Failed
+// with a capped error status, and RemoveWebhook drops the entry (no ledger
+// growth for dead destinations).
+func TestForwarderStatsLedger(t *testing.T) {
+	rx := newTestReceiver(t)
+	sf := NewSIEMForwarder(16)
+	defer sf.Stop()
+
+	sf.AddWebhook(WebhookConfig{ID: "wh-stats", URL: rx.srv.URL, Timeout: 3 * time.Second})
+
+	// A destination that has never been attempted carries zero values.
+	zero := sf.Stats()["wh-stats"]
+	if zero.Delivered != 0 || zero.Failed != 0 || zero.LastDelivery != "" || zero.LastStatus != "" {
+		t.Fatalf("fresh webhook must carry zero stats, got %+v", zero)
+	}
+
+	sf.Forward(SIEMEvent{EventType: "operator_login", Source: "test"})
+	rx.waitFor(t)
+	s := statsFor(t, sf, "wh-stats", 1)
+	if s.Delivered != 1 || s.Failed != 0 {
+		t.Fatalf("after one ok delivery: %+v", s)
+	}
+	if s.LastStatus != "ok" || s.LastDelivery == "" {
+		t.Fatalf("ok delivery must stamp status/delivery: %+v", s)
+	}
+
+	rx.mu.Lock()
+	rx.fail = true
+	rx.mu.Unlock()
+	sf.Forward(SIEMEvent{EventType: "operator_login", Source: "test"})
+	s = statsFor(t, sf, "wh-stats", 2)
+	if s.Failed != 1 {
+		t.Fatalf("after one failed delivery: %+v", s)
+	}
+	if len(s.LastStatus) > maxLastStatusLen || !strings.HasPrefix(s.LastStatus, "error:") {
+		t.Fatalf("failed delivery must carry a capped error status: %+v", s)
+	}
+
+	if !sf.RemoveWebhook("wh-stats") {
+		t.Fatalf("RemoveWebhook reported miss for a live destination")
+	}
+	if s, ok := sf.Stats()["wh-stats"]; ok {
+		t.Fatalf("ledger must go with the destination, got %+v", s)
 	}
 }

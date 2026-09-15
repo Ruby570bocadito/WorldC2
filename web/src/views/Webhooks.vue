@@ -43,17 +43,47 @@
               required
             />
           </div>
-          <div>
-            <label class="field-label" for="wh-h1">Header (name:value, optional)</label>
+        </div>
+        <div class="headers-block">
+          <span class="field-label">Custom headers (optional, up to 16)</span>
+          <div v-for="(h, i) in form.headers" :key="i" class="header-row">
             <input
-              id="wh-h1"
-              v-model="headerInput"
+              v-model="h.name"
               class="input mono"
               type="text"
-              placeholder="Authorization: Bearer …"
+              maxlength="128"
+              :placeholder="'Name ' + (i + 1) + ' (e.g. Authorization)'"
+              :aria-label="'Header ' + (i + 1) + ' name'"
               autocomplete="off"
             />
+            <input
+              v-model="h.value"
+              class="input mono"
+              type="text"
+              maxlength="1024"
+              placeholder="Value (e.g. Bearer …)"
+              :aria-label="'Header ' + (i + 1) + ' value'"
+              autocomplete="off"
+            />
+            <button
+              class="icon-btn danger"
+              type="button"
+              :aria-label="'Remove header ' + (i + 1)"
+              title="Remove header"
+              @click="form.headers.splice(i, 1)"
+            >
+              <IconTrash :size="14" />
+            </button>
           </div>
+          <button
+            class="btn btn-ghost btn-sm"
+            type="button"
+            :disabled="form.headers.length >= 16"
+            @click="form.headers.push({ name: '', value: '' })"
+          >
+            <IconPlus :size="13" />
+            <span>Add header</span>
+          </button>
         </div>
         <div class="events-block">
           <span class="field-label">Events (none selected = forward everything)</span>
@@ -79,6 +109,7 @@
           <tr>
             <th>Endpoint</th>
             <th>Events</th>
+            <th>Deliveries</th>
             <th>Timeout</th>
             <th>Created</th>
             <th style="width: 90px">Actions</th>
@@ -92,6 +123,18 @@
               <span v-else class="events-cell">
                 <span v-for="ev in wh.events" :key="ev" class="event-tag mono">{{ ev }}</span>
               </span>
+            </td>
+            <td>
+              <span v-if="wh.stats && (wh.stats.delivered || wh.stats.failed)" class="stats-cell">
+                <span class="stat-badge ok" :title="'Last: ' + (wh.stats.last_delivery || '—')">
+                  {{ wh.stats.delivered }} ok
+                </span>
+                <span v-if="wh.stats.failed" class="stat-badge fail" :title="wh.stats.last_status || ''">
+                  {{ wh.stats.failed }} failed
+                </span>
+                <span class="small muted">{{ fmtDate(wh.stats.last_delivery) }}</span>
+              </span>
+              <span v-else class="small muted">no attempts yet</span>
             </td>
             <td class="num">{{ wh.timeout_ms }}ms</td>
             <td class="num">{{ fmtDate(wh.created_at) }}</td>
@@ -148,8 +191,7 @@ export default {
     return {
       webhooks: [],
       eventTypes: EVENT_TYPES,
-      form: { url: '', timeout_ms: 5000, events: [] },
-      headerInput: '',
+      form: { url: '', timeout_ms: 5000, events: [], headers: [] },
       formOpen: false,
       creating: false,
       loading: true,
@@ -177,17 +219,17 @@ export default {
       for (const ev of f.events) {
         if (!this.eventTypes.includes(ev)) return 'Unknown event type selected'
       }
-      if (this.headerInput.trim()) {
-        const idx = this.headerInput.indexOf(':')
-        if (idx < 1) return 'Header must be "name: value"'
-        if (this.headerInput.slice(0, idx).trim().length > 128) return 'Header name too long'
+      const seen = new Set()
+      for (const h of f.headers) {
+        const name = h.name.trim()
+        if (!name) return 'Header names cannot be empty'
+        if (name.length > 128) return 'Header names must be 128 characters or fewer'
+        if (h.value.length > 1024) return 'Header values must be 1024 characters or fewer'
+        const lower = name.toLowerCase()
+        if (seen.has(lower)) return 'Duplicate header name: ' + name
+        seen.add(lower)
       }
       return ''
-    },
-    parseHeader() {
-      const idx = this.headerInput.indexOf(':')
-      if (idx < 1) return null
-      return { [this.headerInput.slice(0, idx).trim()]: this.headerInput.slice(idx + 1).trim() }
     },
     async fetchWebhooks() {
       try {
@@ -208,17 +250,19 @@ export default {
       if (this.clientError || this.creating) return
       this.creating = true
       try {
-        const headers = this.headerInput.trim() ? this.parseHeader() : undefined
         // POST /api/webhooks { url, headers, timeout_ms, events }
+        const headers = {}
+        for (const h of this.form.headers) {
+          if (h.name.trim()) headers[h.name.trim()] = h.value
+        }
         await api.post('/api/webhooks', {
           url: this.form.url,
-          headers,
+          headers: Object.keys(headers).length ? headers : undefined,
           timeout_ms: this.form.timeout_ms,
           events: this.form.events,
         })
         notify.ok('Webhook registered')
-        this.form = { url: '', timeout_ms: 5000, events: [] }
-        this.headerInput = ''
+        this.form = { url: '', timeout_ms: 5000, events: [], headers: [] }
         this.formOpen = false
         this.clientError = ''
         this.fetchWebhooks()
@@ -273,6 +317,24 @@ export default {
   color: var(--muted);
 }
 .event-check:hover { color: var(--text); }
+
+.headers-block { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.header-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(200px, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.stats-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.stat-badge {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-weight: 600;
+}
+.stat-badge.ok { color: var(--ok, #3fb68b); background: rgba(63, 182, 139, 0.12); }
+.stat-badge.fail { color: var(--danger, #e5484d); background: rgba(229, 72, 77, 0.12); }
 
 .url-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .events-cell { display: flex; flex-wrap: wrap; gap: 4px; }

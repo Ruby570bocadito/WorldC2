@@ -1,7 +1,9 @@
 package c2
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -98,7 +100,7 @@ type CredentialVault struct {
 		AddCredential(c *db.CredentialRecord) error
 		ListCredentials() ([]db.CredentialRecord, error)
 		SearchCredentials(query string) ([]db.CredentialRecord, error)
-		DeleteCredential(id string) error
+		DeleteCredential(id string) (bool, error)
 		CountCredentials() (int, error)
 	}
 }
@@ -108,15 +110,24 @@ func NewCredentialVault(database interface {
 	AddCredential(c *db.CredentialRecord) error
 	ListCredentials() ([]db.CredentialRecord, error)
 	SearchCredentials(query string) ([]db.CredentialRecord, error)
-	DeleteCredential(id string) error
+	DeleteCredential(id string) (bool, error)
 	CountCredentials() (int, error)
 }) *CredentialVault {
 	return &CredentialVault{db: database}
 }
 
 // Add adds a credential to the vault (persisted to SQLite).
-func (v *CredentialVault) Add(c Credential) string {
-	id := fmt.Sprintf("cred-%x", time.Now().UnixNano())
+//
+// Round 15: the error is now surfaced. Previously a failed DB write was
+// only logged while the handler answered {"status":"stored"} — the
+// operator believed the credential was saved when nothing was persisted
+// and the returned ID pointed at a row that never existed (the vault has
+// no in-memory copy; SQLite is the only storage).
+func (v *CredentialVault) Add(c Credential) (string, error) {
+	id, err := newCredentialID()
+	if err != nil {
+		return "", err
+	}
 	rec := &db.CredentialRecord{
 		ID:       id,
 		Username: c.Username,
@@ -129,9 +140,28 @@ func (v *CredentialVault) Add(c Credential) string {
 		Captured: time.Now(),
 	}
 	if err := v.db.AddCredential(rec); err != nil {
-		log.Printf("[VAULT] Failed to persist credential: %v", err)
+		return "", err
 	}
-	return id
+	return id, nil
+}
+
+// Delete removes a credential by ID and reports whether a row was actually
+// deleted. It backs DELETE /api/vault (vault:delete, admin only).
+func (v *CredentialVault) Delete(id string) (bool, error) {
+	return v.db.DeleteCredential(id)
+}
+
+// newCredentialID mints an unpredictable identifier for a stored
+// credential. The previous time-based ID (cred-<UnixNano>) was both
+// predictable — credentials are the most sensitive loot in the vault — and
+// collision-prone when two adds landed in the same nanosecond. Same
+// discipline as newWebhookID in the handlers package (crypto/rand, hex).
+func newCredentialID() (string, error) {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate credential id: %w", err)
+	}
+	return fmt.Sprintf("cred-%s", hex.EncodeToString(b)), nil
 }
 
 // Search searches credentials by keyword.
