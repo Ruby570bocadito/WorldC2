@@ -368,6 +368,162 @@ func (d *DB) GetSessionTasks(sessionID string) ([]TaskRecord, error) {
 	return scanTasks(rows)
 }
 
+// Task page sizing. MaxTaskPage caps every page no matter what the client
+// asks for — a "limit=999999999" must answer with a bounded page, not a
+// full-table dump. DefaultTaskPage preserves the historical behavior of
+// GetSessionTasks (the console's first page shows up to 100 tasks). Both
+// are exported: the handlers layer enforces the same caps at the API
+// boundary with a 400, the DB clamps as a second line of defense.
+const (
+	DefaultTaskPage = 100
+	MaxTaskPage     = 200
+)
+
+// TaskPage is one page of a session's task history with the cursor needed
+// to request the next one. Cursor is composite (issued_at, id): several
+// tasks routinely share the same second-granularity timestamp, so a
+// timestamp-only cursor could skip or repeat rows inside the tie group.
+// The tie-break on id (a "task-<hex>" random string) is arbitrary but
+// stable — deterministic given the same rows, which is all pagination
+// needs to be honest (no dupes, no gaps).
+type TaskPage struct {
+	Tasks   []TaskRecord
+	HasMore bool
+	// NextRaw/NextID form the opaque composite cursor for the next page:
+	// NextRaw is the issued_at value EXACTLY as stored (the driver's text
+	// rendering), NextID the last row's id. Echoing the stored text back
+	// keeps the comparison byte-exact inside SQLite — immune to time.Time
+	// re-formatting, location changes and DST offsets. Both empty when the
+	// page is the last one.
+	NextRaw string
+	NextID  string
+}
+
+// GetSessionTasksPage returns one page of a session's task history, newest
+// first. When beforeRaw/beforeID are non-empty, only rows strictly older
+// than the cursor (or sharing its timestamp with a smaller id) are
+// returned, so the previous page's last row never repeats. The cursor is
+// opaque: callers pass back the exact strings this function emitted. It
+// fetches limit+1 rows internally to compute HasMore without a second
+// query. limit <= 0 selects DefaultTaskPage; limit > MaxTaskPage clamped.
+func (d *DB) GetSessionTasksPage(sessionID string, limit int, beforeRaw, beforeID string) (*TaskPage, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = DefaultTaskPage
+	}
+	if limit > MaxTaskPage {
+		limit = MaxTaskPage
+	}
+
+	q := `SELECT id, session_id, command, output, exit_code, success, issued_at, completed_at, CAST(issued_at AS TEXT)
+                FROM tasks WHERE session_id=?`
+	args := []interface{}{sessionID}
+	if beforeRaw != "" && beforeID != "" {
+		q += ` AND (issued_at < ? OR (issued_at = ? AND id < ?))`
+		args = append(args, beforeRaw, beforeRaw, beforeID)
+	}
+	q += ` ORDER BY issued_at DESC, id DESC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var all []TaskRecord
+	var raws []string // stored text of issued_at, parallel to all
+	for rows.Next() {
+		var t TaskRecord
+		var completedAt *time.Time
+		var success int
+		var rawIssued string
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.Command, &t.Output,
+			&t.ExitCode, &success, &t.IssuedAt, &completedAt, &rawIssued); err != nil {
+			return nil, err
+		}
+		t.Success = success != 0
+		t.CompletedAt = completedAt
+		all = append(all, t)
+		raws = append(raws, rawIssued)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &TaskPage{Tasks: all}
+	if len(all) > limit {
+		page.Tasks = all[:limit]
+		page.HasMore = true
+	}
+	if n := len(page.Tasks); n > 0 {
+		// Cursor of the LAST KEPT row (survives the overflow trim because
+		// raws is parallel to the untrimmed scan, so index n-1 is right).
+		page.NextRaw = raws[n-1]
+		page.NextID = page.Tasks[n-1].ID
+	}
+	return page, nil
+}
+
+// AuditRecord is one row of the audit_log table: a timestamped operator or
+// system event (api_call, auth_failed, task, session_killed...). Detail is
+// an operator-facing description — it may contain usernames and IPs, which
+// is exactly why the read API is admin-only.
+type AuditRecord struct {
+	ID      int
+	Action  string
+	Detail  string
+	Created time.Time
+}
+
+// MaxAuditPage bounds ListAuditEntries the same way MaxTaskPage bounds
+// task pages: the client picks a page size, the server picks the ceiling.
+// Exported for the handlers layer's 400 contract.
+const MaxAuditPage = 500
+
+// ListAuditEntries returns the newest audit entries, newest first. action
+// (optional) filters to one event type (exact match). limit <= 0 selects
+// maxAuditPage; larger values are clamped. The audit trail is append-only
+// by design — there is intentionally no update or delete path.
+func (d *DB) ListAuditEntries(limit int, action string) ([]AuditRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = MaxAuditPage
+	}
+	if limit > MaxAuditPage {
+		limit = MaxAuditPage
+	}
+
+	q := `SELECT id, action, detail, timestamp FROM audit_log`
+	args := []interface{}{}
+	if action != "" {
+		q += ` WHERE action = ?`
+		args = append(args, action)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AuditRecord
+	for rows.Next() {
+		var rec AuditRecord
+		if err := rows.Scan(&rec.ID, &rec.Action, &rec.Detail, &rec.Created); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 // CountTasks returns the total number of task records across every
 // session. Used by /api/metrics: a single COUNT(*) scales with nothing,
 // while counting per session in Go would multiply queries by sessions.

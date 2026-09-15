@@ -8,11 +8,22 @@
       <div class="head-actions">
         <span v-if="files.length" class="badge">{{ filtered.length }}/{{ files.length }} files</span>
         <button
+          v-if="filtered.length"
+          class="btn btn-ghost btn-sm"
+          type="button"
+          :disabled="exporting"
+          title="Download the current filtered listing as CSV"
+          @click="exportCsv"
+        >
+          <IconDownload :size="14" />
+          <span>Export CSV</span>
+        </button>
+        <button
           v-if="selectedCount"
           class="btn btn-danger"
           type="button"
           :disabled="purgingSelected"
-          @click="purgeSelected"
+          @click="confirmPurgeSelected"
         >
           <span v-if="purgingSelected" class="spinner" />
           <IconTrash v-else :size="14" />
@@ -23,7 +34,7 @@
           class="btn btn-danger"
           type="button"
           :disabled="purgingAll"
-          @click="purgeAll"
+          @click="confirmPurgeAll"
         >
           <span v-if="purgingAll" class="spinner" />
           <IconTrash v-else :size="14" />
@@ -126,7 +137,7 @@
                 :title="'Purge ' + (f.filename || 'file')"
                 aria-label="Purge file"
                 :disabled="deleting === f.id"
-                @click="purge(f)"
+                @click="confirmPurge(f)"
               >
                 <span v-if="deleting === f.id" class="spinner" />
                 <IconTrash v-else :size="15" />
@@ -151,6 +162,41 @@
         <span class="muted small">Loading files…</span>
       </div>
     </div>
+
+    <!-- destructive confirmations share the round-16 modal: explain WHAT is
+         destroyed, keep Esc/backdrop as cancel, and demand the PURGE phrase
+         for the bulk wipe -->
+    <ConfirmModal
+      v-if="pendingPurge"
+      :title="'Purge ' + (pendingPurge.filename || pendingPurge.id) + '?'"
+      message="The artifact on disk and its record are removed permanently. This cannot be undone."
+      confirm-label="Purge file"
+      danger
+      :busy="!!deleting"
+      @confirm="doPurge"
+      @cancel="pendingPurge = null"
+    />
+    <ConfirmModal
+      v-if="pendingPurgeSelected"
+      :title="'Purge ' + selected.length + ' selected file(s)?'"
+      message="The artifacts on disk and their records are removed permanently. This cannot be undone."
+      confirm-label="Purge selected"
+      danger
+      :busy="purgingSelected"
+      @confirm="doPurgeSelected"
+      @cancel="pendingPurgeSelected = false"
+    />
+    <ConfirmModal
+      v-if="pendingPurgeAll"
+      :title="'Purge ALL ' + files.length + ' file(s)?'"
+      message="Every artifact on disk and its record is removed permanently. This cannot be undone."
+      confirm-label="Purge everything"
+      danger
+      require-phrase="PURGE"
+      :busy="purgingAll"
+      @confirm="doPurgeAll"
+      @cancel="pendingPurgeAll = false"
+    />
   </div>
 </template>
 
@@ -158,11 +204,13 @@
 import { api, downloadFile } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtDate, fmtSize, shortId } from '../utils/format.js'
+import { toCSV, downloadText } from '../utils/csv.js'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import { IconDownload, IconFiles, IconSearch, IconTrash } from '../components/icons.js'
 
 export default {
   name: 'FilesView',
-  components: { IconDownload, IconFiles, IconSearch, IconTrash },
+  components: { IconDownload, IconFiles, IconSearch, IconTrash, ConfirmModal },
   data() {
     return {
       files: [],
@@ -171,7 +219,13 @@ export default {
       deleting: null,
       purgingAll: false,
       purgingSelected: false,
+      exporting: false,
       selected: [],
+      // Two-step confirmations (ConfirmModal, round 16 pattern): one at a
+      // time; the bulk wipe demands the PURGE phrase.
+      pendingPurge: null,
+      pendingPurgeSelected: false,
+      pendingPurgeAll: false,
       query: '',
       sessionFilter: 'all',
       moduleFilter: 'all',
@@ -264,21 +318,50 @@ export default {
         this.downloading = null
       }
     },
-    async purge(f) {
-      const ok = window.confirm(
-        'Purge "' + (f.filename || f.id) + '"? The artifact and its record are removed permanently.'
-      )
-      if (!ok) return
+    async confirmPurge(f) {
+      this.pendingPurge = f
+    },
+    async doPurge() {
+      const f = this.pendingPurge
+      if (!f || this.deleting) return
       this.deleting = f.id
       try {
         // DELETE /api/files/:id (Bearer auth via api layer)
         await api.del('/api/files/' + encodeURIComponent(f.id))
         notify.ok('File purged')
+        this.pendingPurge = null
         this.fetchFiles()
       } catch (e) {
         if (!e.expired) notify.error('Purge failed: ' + e.message)
       } finally {
         this.deleting = null
+      }
+    },
+    exportCsv() {
+      if (this.exporting || !this.filtered.length) return
+      this.exporting = true
+      try {
+        // Export the CURRENT FILTERED listing — the operator exports exactly
+        // the rows they see, search and filters included (same contract as
+        // the vault export). Rows come from hostile hosts, so the shared
+        // csv.js serializer applies RFC 4180 quoting AND the
+        // formula-injection guard (=, +, -, @ leads land as inert text).
+        const rows = this.filtered.map((f) => ({
+          filename: f.filename || '',
+          session_id: f.session_id || '',
+          module: f.module || '',
+          size: Number(f.size) || 0,
+          created: f.created || '',
+        }))
+        const csv = toCSV(
+          ['filename', 'session', 'module', 'size', 'captured'],
+          rows,
+          ['filename', 'session_id', 'module', 'size', 'created']
+        )
+        downloadText('worldc2-files-' + new Date().toISOString().slice(0, 10) + '.csv', csv)
+        notify.ok('Exported ' + rows.length + ' file record(s)')
+      } finally {
+        this.exporting = false
       }
     },
     toggle(id) {
@@ -312,12 +395,13 @@ export default {
         this.selected = [...this.selected, ...missing]
       }
     },
-    async purgeSelected() {
+    confirmPurgeSelected() {
+      if (!this.selected.length) return
+      this.pendingPurgeSelected = true
+    },
+    async doPurgeSelected() {
       const ids = [...this.selected]
-      const ok = window.confirm(
-        'Purge ' + ids.length + ' selected file(s)? Artifacts on disk and their records are removed permanently.'
-      )
-      if (!ok) return
+      if (!ids.length || this.purgingSelected) return
       this.purgingSelected = true
       let purged = 0
       let failed = 0
@@ -340,28 +424,31 @@ export default {
           notify.ok('Purged ' + purged + ' file(s)')
         }
         this.selected = []
+        this.pendingPurgeSelected = false
         this.fetchFiles()
       } finally {
         this.purgingSelected = false
       }
     },
-    async purgeAll() {
+    confirmPurgeAll() {
+      if (!this.files.length) return
+      this.pendingPurgeAll = true
+    },
+    async doPurgeAll() {
       const n = this.files.length
-      const ok = window.confirm(
-        'Purge ALL ' + n + ' file(s)? Artifacts on disk and their records are removed permanently.'
-      )
-      if (!ok) return
+      if (!n || this.purgingAll) return
       this.purgingAll = true
       try {
         // DELETE /api/files (Bearer auth via api layer) — bulk wipe server-side
         const res = await api.del('/api/files')
         const count = res && typeof res.purged === 'number' ? res.purged : n
         notify.ok('Purged ' + count + ' file(s)')
+        this.pendingPurgeAll = false
         this.fetchFiles()
       } catch (e) {
         if (!e.expired) notify.error('Bulk purge failed: ' + e.message)
       } finally {
-        this.purgingAll = null
+        this.purgingAll = false
       }
     },
   },

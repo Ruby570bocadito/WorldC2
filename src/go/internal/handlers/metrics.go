@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/version"
 )
 
 // handleMetrics exposes operational telemetry in the Prometheus text
@@ -25,6 +27,20 @@ import (
 // drift from the database.
 func (r *Router) handleMetrics(w http.ResponseWriter, req *http.Request) {
 	m := newMetricsBuilder()
+
+	// Build identity: exactly one labeled sample, value always 1 — the
+	// information lives in the labels (version / commit / go version),
+	// which is how prometheus_model expects constant-ish dimensions. The
+	// identity is already behind the sessions:list gate like every other
+	// gauge here: it tells an authenticated operator WHICH build they are
+	// looking at, nothing more (no runtime secrets, no host data).
+	m.labeledGauge("worldc2_build_info", 1,
+		"Build identity of this server binary (labels: version, commit, go_version).",
+		[]metricsLabel{
+			{"version", version.Version},
+			{"commit", version.Commit},
+			{"go_version", runtime.Version()},
+		})
 
 	// Server lifecycle.
 	m.gauge("worldc2_uptime_seconds", r.server.UptimeSeconds(),
@@ -96,7 +112,7 @@ type metricsBuilder struct {
 }
 
 func newMetricsBuilder() *metricsBuilder {
-	return &metricsBuilder{lines: make([]string, 0, 48)}
+	return &metricsBuilder{lines: make([]string, 0, 52)}
 }
 
 func (mb *metricsBuilder) gauge(name string, value interface{}, help string) {
@@ -105,6 +121,43 @@ func (mb *metricsBuilder) gauge(name string, value interface{}, help string) {
 		"# TYPE "+name+" gauge",
 		name+" "+formatMetricValue(value),
 	)
+}
+
+// metricsLabel is one label of a labeled sample.
+type metricsLabel struct {
+	Name  string
+	Value string
+}
+
+// labeledGauge emits a single sample with Prometheus label sets:
+// \tname{label="value",...} sample. Label values are escaped per the
+// exposition format (backslash, double quote and newline), so a commit
+// string or injected version can never break out of the quotes — and a
+// malformed value degrades to escaped text, never to a broken scrape.
+func (mb *metricsBuilder) labeledGauge(name string, value interface{}, help string, labels []metricsLabel) {
+	parts := make([]string, 0, len(labels))
+	for _, l := range labels {
+		parts = append(parts, l.Name+"=\""+escapeLabelValue(l.Value)+"\"")
+	}
+	sample := name
+	if len(parts) > 0 {
+		sample = name + "{" + strings.Join(parts, ",") + "}"
+	}
+	mb.lines = append(mb.lines,
+		"# HELP "+name+" "+help,
+		"# TYPE "+name+" gauge",
+		sample+" "+formatMetricValue(value),
+	)
+}
+
+// escapeLabelValue applies the Prometheus text-format escaping rules for
+// label values: backslash first (so later escapes stay literal), then
+// double quotes, then newlines.
+func escapeLabelValue(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `"`, `\"`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
+	return v
 }
 
 func (mb *metricsBuilder) render() string {

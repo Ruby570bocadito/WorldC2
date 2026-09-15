@@ -1,5 +1,117 @@
 # WorldC2 — Changelog
 
+## v1.18.0 — Round 17: audit trail read API + viewer, task-history pagination, Files export & ConfirmModal, webhook health on the Dashboard, build identity, CI browser E2E (2026-09-15)
+
+Seventeenth round, again under the "más profundas, intensas y largas"
+directive: **six** deliveries — the biggest Implementaciones output so far —
+including one feature nobody had planned (the audit trail read API) and a
+backlog-scrub that leaves the r16 idea list at zero. The round also wires the
+browser E2E suite into CI and stamps every binary with its build identity.
+
+### Added (Implementaciones)
+
+- **`GET /api/audit` + Audit log view** — the `audit_log` table has recorded
+  every API call, auth event and lifecycle action since round 1, with no read
+  API: the trail was invisible from the console. The new endpoint (gated by
+  the `audit:read` PERMISSION — admin and auditor, exactly as the developer
+  guide's role matrix documented since the early rounds) answers
+  `{id, action, detail, created}` newest-first with `?limit=1..500`
+  (strict bounds, server-clamped, five invalid shapes → 400) and an exact
+  `?action=` filter (≤ 64 chars; unknown values → empty array, never an
+  error; POST → 405). The console gains an **Audit log** view with a new
+  nav item and `IconAudit`: search, action filter, page-size select and a
+  10 s live refresh. Route guard: `roles: ['admin', 'auditor']`. Pinned by
+  `TestAuditContract` (401 anonymous, 403 viewer, **200 auditor**, 405 POST,
+  field names, newest-is-api_call) and `TestAuditLimitAndFilter`.
+- **Task-history pagination** — `GET /api/sessions/{id}` no longer silently
+  caps the history at 100 rows: `?limit=1..200` (default 100 = the historical
+  behavior) plus an opaque composite cursor (`?before=&before_id=`) page the
+  history; the server fetches limit+1 rows to answer `has_more` without a
+  second query. The cursor is the stored timestamp text byte-exact (a probe
+  caught the driver persisting `time.Time` as Go's `String()` rendering — an
+  RFC3339 re-render compares greater than every stored row and would have
+  silently re-served page 1). Parameter validation runs BEFORE the session
+  lookup: bad input answers 400 even for unknown sessions. The session
+  detail panel grows a **Load more** control with a "showing N" hint.
+  Pinned by `TestTaskHistoryPagination` (7 tasks incl. a tie group walked
+  page by page — no dupes, no gaps; strict limits; composite-cursor and
+  hostile-cursor 400s).
+- **Files CSV export + ConfirmModal adoption** — the Files view gains an
+  "Export CSV" button (disabled logic: hidden without rows) that downloads
+  the current FILTERED listing as `worldc2-files-YYYY-MM-DD.csv` through the
+  round-16 `csv.js` serializer (RFC 4180 quoting + formula-injection guard —
+  loot comes from hostile hosts). Files was also the last view still using
+  `window.confirm`: single purge, purge-selected and purge-all now use the
+  shared `ConfirmModal`, with the bulk wipe demanding the `PURGE` phrase
+  (backlog r16 #4 + the ConfirmModal parity gap).
+- **Dashboard SIEM webhook health panel** — admins see a per-destination
+  delivery panel (ok/failed counters, dot by `last_status`, last attempt +
+  status via `fmtAgo`) sourced from the round-15 ledger; the endpoint is
+  admin-gated and a failed fetch hides the panel for other roles instead of
+  surfacing a sync error (backlog r16 #3).
+- **`worldc2_build_info` gauge** — new `internal/version` package with
+  `Version`/`Commit` injected via `-ldflags` (Makefile: `make build-server
+  VERSION=v1.18.0 COMMIT=...`); metrics gains a labeled `worldc2_build_info`
+  sample with values escaped per the Prometheus exposition format (backslash,
+  quotes, newlines). Defaults are honest (`dev`/`unknown`) so untagged builds
+  still report a non-empty identity (backlog r16 #5). Pinned by
+  `TestMetricsBuildInfo`.
+- **CI browser E2E job** — `.github/workflows/ci.yml` gains an `e2e` job that
+  builds the server + console, installs Playwright Chromium, starts the real
+  binary with `config.example.yaml -no-tls`, polls `/api/health` until ready
+  and runs the suite; failures upload the Playwright report as an artifact
+  (backlog r16 #1). The workflow now declares workflow-level
+  `permissions: contents: read` — the GITHUB_TOKEN was running with default
+  write scope for no reason. The E2E suite grows from 6 to **9 specs**
+  (`round17.spec.js`: audit view, Files export + purge modal, Dashboard
+  webhook panel), all seeding through the real HTTP API.
+
+### Changed (Pulimiento)
+
+- `api/openapi.yaml`: `/api/audit` path documented (params, 400/401/403/405),
+  `/api/sessions/{id}` documents `limit`/`before`/`before_id` and the
+  `next_page` envelope, `/api/metrics` example shows `worldc2_build_info`
+  (27 paths, `yaml.safe_load` verified).
+- README feature table: six new rows (audit viewer, task pagination, Files
+  export, webhook health panel, build identity, CI E2E) and updates to the
+  metrics/ConfirmModal/E2E rows.
+- DEVELOPER_GUIDE: `/api/audit` row, paginated `/api/sessions/:id` row,
+  `worldc2_build_info` in the metrics row, Browser-E2E section documents the
+  new specs and the CI job.
+- Makefile: `build-server` injects VERSION/COMMIT ldflags (`make
+  build-server VERSION=... COMMIT=...`); `VERSION ?= v1.18.0`.
+- CHANGELOG v1.18.0 entry; screenshots re-captured (`docs/assets/audit.png`
+  new; `dashboard.png` and `files.png` re-shot with the new panels/buttons).
+
+### Fixed (Bugs/Seguridad)
+
+- **`audit:read` finally wired** — the permission existed in rbac.go since
+  the early rounds (granted to admin and auditor) and the developer guide's
+  matrix documented it, but no endpoint ever used it; round 17's audit API
+  adopts the permission instead of a naive admin-only gate, and the test
+  suite pins all four roles (admin ✅, auditor ✅, viewer 403, unauthenticated
+  401).
+- **Files `purgingAll = null`** — the bulk-purge finally-block reset the
+  flag to `null` while its initial value was `false`; harmless (both falsy)
+  but a type lie that tripped strict equality reasoning. Fixed to `false`.
+- **Least-privilege CI** — the workflow token now runs under
+  `permissions: contents: read`; no job publishes releases or comments, so
+  nothing needs more.
+
+### Verified
+
+- `go build ./...`, `go vet ./...`, `gofmt -l` clean.
+- `go test -race ./...`: 13 packages with tests, all green (handlers ~70 s).
+- `npm run build` clean (bundle 188.7 kB / 61.9 kB gzip).
+- `yaml.safe_load` on `api/openapi.yaml` (27 paths) and
+  `.github/workflows/ci.yml` (6 jobs).
+- Browser E2E: **9/9** against the rebuilt binary (6.3 s for the r16 core,
+  8.4 s total incl. round-17 specs).
+- Live smoke over the rebuilt binary: **46/46** (auth incl. viewer/auditor
+  roles, metrics build_info + content-type + no credential material, the full
+  audit contract, task pagination params incl. hostile cursors, days
+  windows, vault/files/webhooks CRUD, RBAC denials).
+
 ## v1.17.0 — Round 16: Prometheus metrics, time-window filters everywhere, vault CSV export, shared ConfirmModal, browser E2E suite (2026-09-15)
 
 Sixteenth round, the deepest and longest so far by operator request ("más

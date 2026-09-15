@@ -37,9 +37,10 @@ module.exports = defineConfig({
       testMatch: /auth\.setup\.js/,
     },
     {
-      // The console flows — every test starts authenticated.
+      // The console flows — every test starts authenticated. Both specs
+      // (critical-flow since round 16, round17 additions) run here.
       name: 'console',
-      testMatch: /critical-flow\.spec\.js/,
+      testMatch: /\.spec\.js$/,
       dependencies: ['setup'],
       use: { storageState: AUTH_STATE },
     },

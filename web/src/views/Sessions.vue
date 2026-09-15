@@ -174,7 +174,10 @@
         </div>
 
         <!-- task history -->
-        <h3 class="section-title">Task history</h3>
+        <h3 class="section-title">
+          Task history
+          <span v-if="tasks.length" class="muted small">· showing {{ tasks.length }}</span>
+        </h3>
         <div v-if="tasks.length" class="task-list">
           <div v-for="t in tasks" :key="t.ID" class="task-row">
             <div class="task-cmd mono">$ {{ t.Command }}</div>
@@ -184,7 +187,14 @@
             </div>
           </div>
         </div>
-        <p v-else class="faint small">No tasks recorded for this session.</p>
+        <div v-if="hasMoreTasks" class="load-more">
+          <button class="btn btn-ghost btn-sm" type="button" :disabled="loadingMore" @click="loadMoreTasks">
+            <span v-if="loadingMore" class="spinner" />
+            <span>{{ loadingMore ? 'Loading…' : 'Load more' }}</span>
+          </button>
+          <span class="small faint">older tasks load on demand — the page never silently caps the history</span>
+        </div>
+        <p v-else-if="!tasks.length" class="faint small">No tasks recorded for this session.</p>
       </div>
     </div>
 
@@ -275,6 +285,11 @@ export default {
       acting: false,
       expanded: null,
       tasks: [],
+      // Task-history pagination (round 17): the server pages with an opaque
+      // composite cursor; null cursor = "fetch the newest page".
+      hasMoreTasks: false,
+      taskCursor: null,
+      loadingMore: false,
       // notes
       notesFor: null,
       notes: [],
@@ -369,17 +384,54 @@ export default {
       if (this.expanded === id) {
         this.expanded = null
         this.tasks = []
+        this.hasMoreTasks = false
+        this.taskCursor = null
         return
       }
       this.expanded = id
       this.tasks = []
+      this.hasMoreTasks = false
+      this.taskCursor = null
+      await this.fetchTasksPage(id, null)
+    },
+    async fetchTasksPage(id, cursor) {
       try {
-        // GET /api/sessions/:id -> { session, tasks }
-        const data = await api.get('/api/sessions/' + encodeURIComponent(id))
-        this.tasks = (data && Array.isArray(data.tasks)) ? data.tasks : []
+        // GET /api/sessions/:id -> { session, tasks, has_more, next_page }.
+        // Without a cursor the server answers with the newest page exactly
+        // like the pre-pagination handler (default 100).
+        let path = '/api/sessions/' + encodeURIComponent(id)
+        if (cursor) {
+          // encodeURIComponent, not qs: the cursor is opaque stored text
+          // containing spaces and '+' — both must survive the query intact.
+          path += '?before=' + encodeURIComponent(cursor.before) +
+            '&before_id=' + encodeURIComponent(cursor.beforeId)
+        }
+        const data = await api.get(path)
+        const rows = (data && Array.isArray(data.tasks)) ? data.tasks : []
+        if (cursor) {
+          this.tasks = this.tasks.concat(rows)
+        } else {
+          this.tasks = rows
+        }
+        this.hasMoreTasks = !!(data && data.has_more)
+        if (data && data.has_more && data.next_page) {
+          this.taskCursor = {
+            before: data.next_page.before || '',
+            beforeId: data.next_page.before_id || '',
+          }
+        } else {
+          this.taskCursor = null
+        }
       } catch (e) {
         if (!e.expired) notify.error('Failed to load tasks: ' + e.message)
       }
+    },
+    loadMoreTasks() {
+      if (!this.expanded || !this.taskCursor || this.loadingMore) return
+      this.loadingMore = true
+      this.fetchTasksPage(this.expanded, this.taskCursor).finally(() => {
+        this.loadingMore = false
+      })
     },
     async kill(s) {
       this.pendingKill = s
@@ -533,6 +585,12 @@ export default {
   color: var(--muted);
 }
 .task-pending { font-style: italic; }
+.load-more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
 
 /* notes modal */
 .modal-backdrop {

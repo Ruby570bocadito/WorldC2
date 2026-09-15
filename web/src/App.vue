@@ -87,6 +87,7 @@ import {
   IconProfiles,
   IconWebhook,
   IconOperators,
+  IconAudit,
   IconKey,
   IconLogout,
   IconMenu,
@@ -102,6 +103,7 @@ const NAV = [
   { to: '/files', label: 'Files', icon: IconFiles },
   { to: '/vault', label: 'Vault', icon: IconKey },
   { to: '/webhooks', label: 'Webhooks', icon: IconWebhook },
+  { to: '/audit', label: 'Audit log', icon: IconAudit },
   { to: '/operators', label: 'Operators', icon: IconOperators },
 ]
 
@@ -117,6 +119,7 @@ export default {
     IconProfiles,
     IconWebhook,
     IconOperators,
+    IconAudit,
     IconKey,
     IconLogout,
     IconMenu,

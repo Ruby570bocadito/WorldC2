@@ -243,13 +243,97 @@ func (r *Router) handleSessionDetail(w http.ResponseWriter, req *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "killed"})
 		return
 	}
+
+	// Task history pagination (round 17). The old handler always answered
+	// with the newest 100 tasks and no way to see older ones — a noisy
+	// session silently buried its own history. The console now pages with
+	// "Load more"; existing clients that ignore the new parameters keep
+	// byte-identical behavior (limit defaults to the historical 100).
+	//
+	// Parameter validation runs BEFORE the session lookup: a malformed
+	// request is the caller's fault regardless of whether the session
+	// exists, and answering 400 first keeps the error honest (a 404 would
+	// hint "session gone" for what is just bad input).
+	limit := db.DefaultTaskPage
+	if raw := req.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > db.MaxTaskPage {
+			http.Error(w, `{"error":"limit must be an integer between 1 and 200"}`, 400)
+			return
+		}
+		limit = n
+	}
+	beforeRaw := ""
+	beforeID := ""
+	if raw := req.URL.Query().Get("before"); raw != "" {
+		// The cursor is opaque (the exact stored timestamp text), but it is
+		// still untrusted input: cap the length and allow only the charset
+		// SQLite datetime text can contain, so a hostile string cannot even
+		// reach the (bound) comparison as garbage.
+		if len(raw) > 64 || !isCursorSafe(raw) {
+			http.Error(w, `{"error":"before must be a valid task cursor"}`, 400)
+			return
+		}
+		beforeRaw = raw
+		beforeID = req.URL.Query().Get("before_id")
+		if beforeID == "" {
+			http.Error(w, `{"error":"before requires before_id (composite cursor)"}`, 400)
+			return
+		}
+		if len(beforeID) > 64 {
+			http.Error(w, `{"error":"before_id must be 64 characters or fewer"}`, 400)
+			return
+		}
+	}
+
 	sess, err := r.server.DB().GetSession(id)
 	if err != nil || sess == nil {
 		http.Error(w, `{"error":"session not found"}`, 404)
 		return
 	}
-	tasks, _ := r.server.DB().GetSessionTasks(id)
-	json.NewEncoder(w).Encode(map[string]interface{}{"session": sess, "tasks": tasks})
+
+	page, err := r.server.DB().GetSessionTasksPage(id, limit, beforeRaw, beforeID)
+	if err != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+
+	tasks := page.Tasks
+	if tasks == nil {
+		tasks = []db.TaskRecord{}
+	}
+	next := map[string]interface{}{}
+	if page.HasMore {
+		next["before"] = page.NextRaw
+		next["before_id"] = page.NextID
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"session":   sess,
+		"tasks":     tasks,
+		"has_more":  page.HasMore,
+		"next_page": next,
+	})
+}
+
+// isCursorSafe allows only the characters the stored datetime text can
+// contain: the driver persists time.Time as Go's String() rendering
+// ("2006-01-02 15:04:05.999999999 -0700 MST m=+0.000000001"), which brings
+// an equals sign and a plus along with digits and separators. It is a
+// sanity gate, not an injection defense — the value only ever flows through
+// a bound parameter — but rejecting garbage at the door keeps error
+// responses precise and the audit trail clean.
+func isCursorSafe(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r == '-' || r == ':' || r == '.' || r == '+' || r == '=' || r == ' ':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // handleCommand executes a command on an agent.

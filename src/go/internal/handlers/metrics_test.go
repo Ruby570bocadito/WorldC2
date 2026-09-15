@@ -44,6 +44,7 @@ func TestMetricsContract(t *testing.T) {
 
 	body := rec.Body.String()
 	required := []string{
+		"worldc2_build_info",
 		"worldc2_uptime_seconds",
 		"worldc2_sessions_active",
 		"worldc2_sessions_total",
@@ -61,7 +62,9 @@ func TestMetricsContract(t *testing.T) {
 		if !strings.Contains(body, "# HELP "+m+" ") || !strings.Contains(body, "# TYPE "+m+" gauge") {
 			t.Errorf("metric %s missing HELP/TYPE header", m)
 		}
-		if !strings.Contains(body, "\n"+m+" ") {
+		// Labeled samples (build_info) render as name{...}; plain
+		// ones as name value.
+		if !strings.Contains(body, "\n"+m+" ") && !strings.Contains(body, "\n"+m+"{") {
 			t.Errorf("metric %s missing sample line", m)
 		}
 	}

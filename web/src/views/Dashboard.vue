@@ -73,6 +73,28 @@
       </div>
     </div>
 
+    <!-- SIEM webhook delivery health (admin only): the round-15 ledger,
+         surfaced where an operator glances first. Hidden for other roles
+         (the endpoint is admin-gated and a failed fetch hides the panel) -->
+    <div v-if="isAdmin && webhooks.length" class="panel">
+      <div class="panel-head">
+        <span class="panel-title">SIEM webhook health</span>
+        <router-link to="/webhooks" class="small">Manage webhooks →</router-link>
+      </div>
+      <div class="wh-body">
+        <div v-for="wh in webhooks" :key="wh.id" class="wh-row">
+          <span class="dot wh-dot" :class="whDotClass(wh)" />
+          <span class="wh-url mono" :title="wh.url">{{ whUrl(wh) }}</span>
+          <span class="wh-meta mono small">
+            <span class="wh-ok">{{ wh.stats.delivered || 0 }} ok</span>
+            <span class="faint"> · </span>
+            <span :class="wh.stats.failed ? 'wh-fail' : ''">{{ wh.stats.failed || 0 }} failed</span>
+          </span>
+          <span class="wh-last small muted">{{ whLast(wh) }}</span>
+        </div>
+      </div>
+    </div>
+
     <div class="grid-2">
       <!-- sessions sparkline -->
       <div class="panel">
@@ -187,6 +209,8 @@ export default {
       sessions: [],
       credCount: null,
       moduleCount: null,
+      // SIEM webhook health (admin only; empty for other roles)
+      webhooks: [],
       loading: true,
       hasError: false,
       history: [],
@@ -204,6 +228,9 @@ export default {
     }
   },
   computed: {
+    isAdmin() {
+      return (localStorage.getItem('bty_role') || 'operator') === 'admin'
+    },
     canReport() {
       const role = localStorage.getItem('bty_role') || 'operator'
       return role === 'admin' || role === 'operator'
@@ -317,10 +344,13 @@ export default {
       }
     },
     async refresh() {
-      const [sessRes, vaultRes, modRes] = await Promise.allSettled([
+      const [sessRes, vaultRes, modRes, whRes] = await Promise.allSettled([
         api.get('/api/sessions'),
         api.get('/api/vault'),
         api.get('/api/modules'),
+        // Admin-only: 403 for other roles — keep the dashboard clean and
+        // never surface that as a sync error.
+        api.get('/api/webhooks'),
       ])
 
       if (sessRes.status === 'fulfilled') {
@@ -342,7 +372,25 @@ export default {
           ? modRes.value.length
           : this.moduleCount
 
+      this.webhooks =
+        whRes.status === 'fulfilled' && Array.isArray(whRes.value) ? whRes.value : []
+
       this.loading = false
+    },
+    whUrl(wh) {
+      const url = wh.url || ''
+      return url.length > 60 ? url.slice(0, 60) + '…' : url
+    },
+    whDotClass(wh) {
+      const st = wh.stats && wh.stats.last_status
+      if (!st) return '' // never attempted since process start
+      if (st === 'ok') return 'dot-ok'
+      return 'dot-danger'
+    },
+    whLast(wh) {
+      const st = wh.stats || {}
+      if (!st.last_delivery) return 'never attempted since start'
+      return this.fmtAgo(st.last_delivery) + ' — ' + (st.last_status || 'unknown')
     },
     toPoints() {
       const n = this.history.length
@@ -522,6 +570,42 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* siem webhook health */
+.wh-body {
+  display: flex;
+  flex-direction: column;
+}
+.wh-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.wh-row:last-child { border-bottom: none; }
+.wh-dot { flex-shrink: 0; }
+.wh-url {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wh-meta { flex-shrink: 0; }
+.wh-ok { color: var(--ok); }
+.wh-fail { color: var(--danger, #e5484d); font-weight: 600; }
+.wh-last {
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .wh-last { display: none; }
 }
 .fleet-group {
   display: flex;

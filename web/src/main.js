@@ -10,6 +10,7 @@ import Profiles from './views/Profiles.vue'
 import Webhooks from './views/Webhooks.vue'
 import Vault from './views/Vault.vue'
 import Operators from './views/Operators.vue'
+import Audit from './views/Audit.vue'
 import Terminal from './views/Terminal.vue'
 import './assets/main.css'
 import './utils/notifications.js'
@@ -25,6 +26,7 @@ const routes = [
   { path: '/vault', name: 'Vault', component: Vault, meta: { requiresAuth: true, title: 'Credential Vault' } },
   { path: '/webhooks', name: 'Webhooks', component: Webhooks, meta: { requiresAuth: true, requiresAdmin: true, title: 'Webhooks' } },
   { path: '/operators', name: 'Operators', component: Operators, meta: { requiresAuth: true, requiresAdmin: true, title: 'Operators' } },
+  { path: '/audit', name: 'Audit', component: Audit, meta: { requiresAuth: true, roles: ['admin', 'auditor'], title: 'Audit log' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -44,6 +46,13 @@ router.beforeEach((to) => {
   if (to.meta.requiresAdmin) {
     const role = localStorage.getItem('bty_role')
     if (role !== 'admin') return '/'
+  }
+
+  // Round 17: audit:read belongs to admin AND auditor (rbac.go) — the
+  // Audit view follows the permission, not the admin-only gate.
+  if (to.meta.roles) {
+    const role = localStorage.getItem('bty_role')
+    if (!to.meta.roles.includes(role)) return '/'
   }
 
   return true

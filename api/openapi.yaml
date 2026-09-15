@@ -294,8 +294,9 @@ paths:
     get:
       summary: Operational metrics in Prometheus text format (requires sessions:list)
       description: >-
-        Counters and gauges only — session/task/credential counts, webhook
-        delivery totals, Go runtime gauges. Never includes credential
+        Counters and gauges only — build identity (worldc2_build_info with
+        version/commit/go_version labels), session/task/credential counts,
+        webhook delivery totals, Go runtime gauges. Never includes credential
         material or session identifiers.
       tags: [System]
       security:
@@ -308,6 +309,9 @@ paths:
               schema:
                 type: string
                 example: |
+                  # HELP worldc2_build_info Build identity of this server binary (labels: version, commit, go_version).
+                  # TYPE worldc2_build_info gauge
+                  worldc2_build_info{version="v1.18.0",commit="unknown",go_version="go1.25.0"} 1
                   # HELP worldc2_uptime_seconds Seconds since the server process started.
                   # TYPE worldc2_uptime_seconds gauge
                   worldc2_uptime_seconds 3600
@@ -358,9 +362,45 @@ paths:
           required: true
           schema:
             type: string
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Task-history page size (1-200). Default 100 — the historical
+            behavior before cursor pagination. Parameter validation runs
+            before the session lookup, so invalid values answer 400 even for
+            unknown sessions.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: before
+          in: query
+          required: false
+          description: >-
+            Opaque cursor (the issued_at value exactly as the previous page's
+            next_page.before returned it). Requires before_id; both come from
+            the previous response — never construct cursors by hand.
+          schema:
+            type: string
+            maxLength: 64
+        - name: before_id
+          in: query
+          required: false
+          description: >-
+            Second half of the composite cursor: the task id of the previous
+            page's last row. Required whenever before is present.
+          schema:
+            type: string
+            maxLength: 64
       responses:
         '200':
-          description: Session details with tasks
+          description: >-
+            Session details with one page of tasks: { session, tasks,
+            has_more, next_page } — next_page.before/before_id carry the
+            cursor for the following page and are absent on the last one.
+        '400':
+          description: Invalid limit or cursor parameters
         '404':
           description: Session not found
     delete:
@@ -856,6 +896,69 @@ paths:
           description: Admin role required
         '404':
           description: Unknown operator id
+
+  /api/audit:
+    get:
+      summary: Read the append-only audit trail (audit:read — admin and auditor)
+      description: >-
+        Every API call, auth event, task and lifecycle action is written to
+        the audit_log table by middleware — this is its read API. Entries
+        carry usernames and IPs in their detail field, hence the gate: the
+        audit:read permission belongs to the admin and auditor roles (the
+        permission existed in rbac.go since the early rounds — round 17
+        finally wires an endpoint to it). The trail is append-only: there is
+        no update or delete path. Newest entries first.
+      tags: [System]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Page size (1-500). Default 500; the server clamps anything above
+            the cap instead of trusting the client.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+        - name: action
+          in: query
+          required: false
+          description: >-
+            Exact event-type filter (e.g. api_call, auth_failed, auth_denied,
+            task). Max 64 characters; unknown values return an empty array,
+            never an error.
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        '200':
+          description: Array of audit entries (empty array, not null, when nothing matches)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    action:
+                      type: string
+                    detail:
+                      type: string
+                    created:
+                      type: string
+                      format: date-time
+        '400':
+          description: Invalid limit or over-long action filter
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Admin role required
+        '405':
+          description: Only GET is supported
 
   /api/notes:
     get:

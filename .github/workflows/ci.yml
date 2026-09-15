@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege by default: the workflow token can only read the repo.
+# No job here publishes releases or comments — anything that ever needs
+# more must opt in explicitly at the job level, never workflow-wide.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -105,6 +111,81 @@ jobs:
             echo "ERROR: raw HTML sinks are forbidden in this project"
             exit 1
           fi
+
+  e2e:
+    # Browser-level regression: the Playwright console suite against a real
+    # server binary + real console build (round 16 suite, wired into CI in
+    # round 17). Creates and deletes real credentials — CI runners are the
+    # perfect disposable target.
+    needs: [test, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            tests/e2e/package-lock.json
+
+      - name: Build server
+        run: mkdir -p dist && cd src/go && CGO_ENABLED=0 go build -o ../../dist/worldc2-server ./cmd/server
+
+      - name: Build console
+        run: cd web && npm ci && npm run build
+
+      - name: Install Playwright
+        run: |
+          cd tests/e2e
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Start server
+        run: |
+          cp config.example.yaml config.yaml
+          ./dist/worldc2-server -config config.yaml -no-tls > server.log 2>&1 &
+          echo $! > server.pid
+          # Poll /api/health instead of a blind sleep: the server is ready
+          # exactly when this returns 200, not a fixed number of seconds later.
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9090/api/health > /dev/null 2>&1; then
+              echo "server ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy in 30s"
+          cat server.log
+          exit 1
+
+      - name: Run browser E2E suite
+        env:
+          WORLDC2_BASE_URL: http://127.0.0.1:9090
+          WORLDC2_USER: admin
+          WORLDC2_PASS: admin
+        run: cd tests/e2e && npx playwright test
+
+      - name: Stop server
+        if: always()
+        run: |
+          kill $(cat server.pid) 2>/dev/null || true
+          rm -f config.yaml server.pid
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/e2e/playwright-report/
+          retention-days: 7
 
   build:
     needs: [test, web]

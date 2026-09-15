@@ -159,3 +159,13 @@ export const IconKey = icon('Key', [
   p('M16 4.5L19 7.5'),
   p('M13.5 7l2.5 2.5'),
 ])
+
+export const IconAudit = icon('Audit', [
+  p('M6 3.5h9l3.5 3.5v13.5H6z'),
+  p('M14.5 3.5V7H18'),
+  p('M9 9h6'),
+  p('M9 12.5h6'),
+  p('M9 16h3'),
+  c(16.2, 16.2, 2.4),
+  p('M18 18l2.5 2.5'),
+])

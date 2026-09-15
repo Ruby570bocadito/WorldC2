@@ -127,6 +127,14 @@ func (r *Router) Setup() *http.ServeMux {
 	mux.HandleFunc("/api/operators", cors(auth(admin(audit(rate(r.handleOperators))))))
 	mux.HandleFunc("/api/operators/", cors(auth(admin(audit(rate(r.handleOperatorDelete))))))
 
+	// Audit trail — read API over the append-only audit_log table every
+	// middleware already writes to. Gated by the audit:read PERMISSION
+	// (rbac.go: admin AND auditor), not the admin middleware: reviewing
+	// the trail is the auditor's whole job and the permission existed for
+	// exactly that purpose since the first rounds — round 17 finally
+	// wires an endpoint to it.
+	mux.HandleFunc("/api/audit", cors(auth(audit(rate(perm("audit:read")(r.handleAudit))))))
+
 	// Team collaboration
 	// Notes and profiles: reads are gated by collab:read (every role has
 	// it — a viewer or auditor must be able to see operator notes), writes

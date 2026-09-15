@@ -156,9 +156,9 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 |--------|------|------|-------------|
 | GET | `/api/health` | No | Liveness only (`{"status":"ok"}` — no telemetry) |
 | GET | `/api/status` | Yes | Operational telemetry: active sessions, listeners, uptime (`sessions:list`) |
-| GET | `/api/metrics` | Yes | Operational metrics in **Prometheus text format** (round 16, `sessions:list`): gauges for sessions active/total, tasks, vault count, loot count, webhook delivery ledger, listeners, uptime and Go runtime. Counts only — never credential material or session identifiers. Scrapes are per-request queries (no stale cache) |
+| GET | `/api/metrics` | Yes | Operational metrics in **Prometheus text format** (round 16, `sessions:list`): gauges for build identity (`worldc2_build_info{version,commit,go_version}`, round 17 — values injected via `-ldflags` by `make build-server`, label values escaped per the exposition format), sessions active/total, tasks, vault count, loot count, webhook delivery ledger, listeners, uptime and Go runtime. Counts only — never credential material or session identifiers. Scrapes are per-request queries (no stale cache) |
 | GET | `/api/sessions` | Yes | List sessions (includes `AgentVersion`, `Transport`, `Privilege`, `Fingerprint` observability fields). Round 16: optional `?days=1..90` window — sessions last seen before the cutoff are excluded; the shared `parseDaysWindow` answers 400 on `0`, negatives, `>90`, non-numeric or overflowing values; no parameter keeps the full listing |
-| GET | `/api/sessions/:id` | Yes | Session detail |
+| GET | `/api/sessions/:id` | Yes | Session detail. Round 17: the task history is PAGINATED — `?limit=1..200` (default 100, the historical behavior) plus an opaque composite cursor `?before=<stored text>&before_id=<task id>` both echoed from the previous response's `next_page`; the server fetches limit+1 rows to answer `has_more` without a second query. Parameter validation runs BEFORE the session lookup (bad input answers 400 even for unknown sessions). The cursor is the timestamp text exactly as stored — the driver persists `time.Time` as Go's `String()` rendering, so never construct cursors by hand |
 | DELETE | `/api/sessions/:id` | Yes | Kill agent; add `?purge=true` to hard-delete the record together with its tasks and persisted loot (`sessions:kill`) |
 | POST | `/api/cmd` | Yes | Execute command |
 | POST | `/api/broadcast` | Yes | Broadcast command |
@@ -174,6 +174,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/POST/DELETE | `/api/socks` | Yes | SOCKS proxy |
 | GET/POST/DELETE | `/api/portfwd` | Yes | Port forwarding |
 | GET/POST/DELETE | `/api/operators` | Admin | Operator management |
+| GET | `/api/audit` | `audit:read` | Read the append-only audit trail (round 17) — every API call, auth event and lifecycle action has been logged to `audit_log` by middleware since round 1; this is its read API. `?limit=1..500` (default 500, server-clamped) and `?action=<exact type>` (≤ 64 chars; unknown values return an empty array). Newest first; entries are `{id, action, detail, created}`. The permission belongs to admin and auditor (rbac.go) — the matrix below has documented it since the early rounds; round 17 wires the endpoint to it |
 | POST | `/api/login` | No | Authenticate, returns access + refresh JWT |
 | POST | `/api/refresh` | No | Rotate: consumes the presented refresh token and returns a new access token **plus a new refresh token** (store both; replaying a consumed refresh returns 401) |
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
@@ -279,13 +280,22 @@ python3 tests/benchmark.py        # Performance
 end to end: login, dashboard render, sessions filters (including the `?days=`
 select), vault create → debounced search → CSV export → two-step delete
 (`ConfirmModal`: Esc cancels, purge-style variants require typing a phrase)
-and logout.
+and logout. Round 17 adds `round17.spec.js`: the audit-log view (live entries
++ filters), the Files view (seeded through the real `POST /api/files`, export
+CSV download event, purge modal Esc-cancel) and the Dashboard SIEM webhook
+health panel (a webhook is registered through the real API and the panel must
+appear). All seeds go through the real HTTP API — never test hooks.
 
 ```bash
 cd tests/e2e && npm install && npx playwright install chromium   # once
 make test-e2e                        # against a running server on :19090
 E2E_BASE_URL=https://c2.lab:8443 E2E_USER=alice E2E_PASS='...' make test-e2e
 ```
+
+CI runs the same suite as the `e2e` job of `.github/workflows/ci.yml` (round
+17): it builds the server + console, starts the binary with
+`config.example.yaml -no-tls`, polls `/api/health` until ready and runs the
+suite against it; failures upload the Playwright report as an artifact.
 
 Design notes: a `setup` project logs in once and stores the JWT
 (`.auth/operator.json`, gitignored) via `storageState` — the console keeps its
