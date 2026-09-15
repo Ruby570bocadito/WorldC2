@@ -28,6 +28,13 @@
         <option value="active">Active</option>
         <option value="inactive">Inactive</option>
       </select>
+      <select v-model="daysFilter" class="select filter-select days-select" aria-label="Time window" title="Show only sessions last seen within this window">
+        <option value="0">All time</option>
+        <option value="1">Last 24h</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
       <select v-model="transportFilter" class="select filter-select" aria-label="Transport filter">
         <option value="all">All transports</option>
         <option v-for="t in transports" :key="t" :value="t">{{ t }}</option>
@@ -214,6 +221,31 @@
         </div>
       </div>
     </div>
+
+    <!-- kill confirmation -->
+    <ConfirmModal
+      v-if="pendingKill"
+      :title="'Kill session ' + (pendingKill.Hostname || shortId(pendingKill.ID)) + '?'"
+      message="The agent will be terminated. The session row stays as a historical record with state 'killed'."
+      confirm-label="Kill session"
+      danger
+      :busy="acting"
+      @confirm="doKill"
+      @cancel="pendingKill = null"
+    />
+
+    <!-- purge confirmation: the destructive variant, extra friction -->
+    <ConfirmModal
+      v-if="pendingPurge"
+      :title="'Purge session ' + (pendingPurge.Hostname || shortId(pendingPurge.ID)) + '?'"
+      message="The record, its tasks and its persisted loot are removed from the database permanently. This cannot be undone."
+      confirm-label="Purge permanently"
+      danger
+      require-phrase="PURGE"
+      :busy="acting"
+      @confirm="doPurge"
+      @cancel="pendingPurge = null"
+    />
   </div>
 </template>
 
@@ -221,11 +253,12 @@
 import { api } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtAgo, fmtDate, shortId, ipOf } from '../utils/format.js'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import { IconSearch, IconNote, IconClose, IconSessions, IconTrash, IconFiles } from '../components/icons.js'
 
 export default {
   name: 'SessionsView',
-  components: { IconSearch, IconNote, IconClose, IconSessions, IconTrash, IconFiles },
+  components: { IconSearch, IconNote, IconClose, IconSessions, IconTrash, IconFiles, ConfirmModal },
   data() {
     return {
       sessions: [],
@@ -234,6 +267,12 @@ export default {
       stateFilter: 'all',
       transportFilter: 'all',
       versionFilter: 'all',
+      // 0 = all time; anything else maps to the ?days= API window.
+      daysFilter: '0',
+      // Two-step confirmations (ConfirmModal) — one at a time.
+      pendingKill: null,
+      pendingPurge: null,
+      acting: false,
       expanded: null,
       tasks: [],
       // notes
@@ -314,7 +353,11 @@ export default {
     },
     async fetchSessions() {
       try {
-        const data = await api.get('/api/sessions')
+        // ?days=N is the server-side window (round 16); 0/absent means
+        // "everything", which keeps the 5s poll payload unchanged.
+        const days = parseInt(this.daysFilter, 10)
+        const path = days > 0 ? '/api/sessions?days=' + days : '/api/sessions'
+        const data = await api.get(path)
         this.sessions = Array.isArray(data) ? data : []
       } catch (e) {
         if (!e.expired) notify.error('Failed to load sessions: ' + e.message)
@@ -339,10 +382,12 @@ export default {
       }
     },
     async kill(s) {
-      const ok = window.confirm(
-        'Kill session "' + (s.Hostname || s.ID) + '"? The agent will be terminated.'
-      )
-      if (!ok) return
+      this.pendingKill = s
+    },
+    async doKill() {
+      const s = this.pendingKill
+      if (!s || this.acting) return
+      this.acting = true
       try {
         await api.del('/api/sessions/' + encodeURIComponent(s.ID))
         notify.ok('Session killed')
@@ -350,16 +395,21 @@ export default {
           this.expanded = null
           this.tasks = []
         }
+        this.pendingKill = null
         this.fetchSessions()
       } catch (e) {
         if (!e.expired) notify.error('Kill failed: ' + e.message)
+      } finally {
+        this.acting = false
       }
     },
     async purge(s) {
-      const ok = window.confirm(
-        'Purge session "' + (s.Hostname || s.ID) + '" permanently? The record, its tasks and its persisted loot are removed from the database.'
-      )
-      if (!ok) return
+      this.pendingPurge = s
+    },
+    async doPurge() {
+      const s = this.pendingPurge
+      if (!s || this.acting) return
+      this.acting = true
       try {
         // DELETE /api/sessions/:id?purge=true — hard delete (tasks + loot included)
         await api.del('/api/sessions/' + encodeURIComponent(s.ID) + '?purge=true')
@@ -368,9 +418,12 @@ export default {
           this.expanded = null
           this.tasks = []
         }
+        this.pendingPurge = null
         this.fetchSessions()
       } catch (e) {
         if (!e.expired) notify.error('Purge failed: ' + e.message)
+      } finally {
+        this.acting = false
       }
     },
     async openNotes(s) {

@@ -50,6 +50,11 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🗝️ Credential vault console | ✅ Working | Dedicated **Vault view** (round 15): search as you type (`GET /api/vault?q=`, capped at 256 chars), add with API-mirrored field caps, password reveal toggles and admin-only deletes (`DELETE /api/vault?id=`, `vault:delete`) — IDs are crypto/rand, not time-derived |
 | 🔔 SIEM webhooks | ✅ Working | `POST/GET/DELETE /api/webhooks` (admin); destinations are **persisted** (migration 9) and re-hydrated on server start; creation validates URL length, header caps (the form supports **multiple** custom headers), a real forwarding timeout (100–60000 ms) and the event-type allowlist; the listing carries a **per-destination delivery ledger** (`stats`: delivered/failed/last_delivery/last_status) surfaced as badges in the console Webhooks view |
 | 📈 Engagement report | ✅ Working | `GET /api/report?format=text|csv|json&days=1..90` (`report:generate`) compiles sessions, tasks and loot into a report — `&download=1` serves the report **content** as an attachment (the Dashboard button ships a format selector plus a **days window** that genuinely filters rows); unknown formats and out-of-range windows answer 400 |
+| 📊 Prometheus metrics | ✅ Working | `GET /api/metrics` (`sessions:list`, round 16) exposes operational gauges in the **Prometheus text format**: sessions active/total, tasks, vault count, loot count, webhook delivery ledger, listeners, uptime, Go runtime — counts only, never credential material or session identifiers |
+| ⏱️ Time-window filters | ✅ Working | `GET /api/sessions?days=1..90` and `GET /api/files?days=1..90` (round 16) narrow listings to the window with the same strict shared parser as the report; the console Sessions and Files views expose it as an "All time / 24h / 7d / 30d / 90d" select and the default (no parameter) behavior is unchanged |
+| 🧾 Vault CSV export | ✅ Working | The Vault view exports the current listing (search filter included) to `worldc2-vault-YYYY-MM-DD.csv` (round 16) — built client-side with RFC 4180 quoting and a **formula-injection guard** (`=`, `+`, `-`, `@` and tab-led cells are neutralized) because captured values come from untrusted hosts |
+| 🛡️ Two-step confirmations | ✅ Working | A shared `ConfirmModal` (round 16) replaces `window.confirm` for vault deletes and session kill/purge: styled explainer, Esc/backdrop always cancels, focus starts on the safe control, and the destructive **purge** additionally requires typing `PURGE` |
+| 🖱️ Browser E2E suite | ✅ Working | `tests/e2e/` (round 16): a Playwright suite that drives the real console — login, dashboard, sessions filters, vault create/search/CSV-export/two-step-delete and logout — runnable via `make test-e2e` against any running server (`E2E_BASE_URL`, `E2E_USER`, `E2E_PASS`); the auth-setup project persists the operator session to `.auth/operator.json` (gitignored) |
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
@@ -176,6 +181,8 @@ make lint          # go vet
 make web           # build frontend
 make build-agent-all  # cross-compile agents
 make test-all      # Go + Python + frontend pipeline
+make test-e2e      # Playwright console suite (needs a running server;
+                   # E2E_BASE_URL / E2E_USER / E2E_PASS override defaults)
 ```
 
 CI runs on every push: Go tests (`-race`), vet, gofmt, Python syntax checks, a live API smoke test

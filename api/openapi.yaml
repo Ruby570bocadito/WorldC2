@@ -290,12 +290,52 @@ paths:
         '403':
           description: Insufficient permissions
 
+  /api/metrics:
+    get:
+      summary: Operational metrics in Prometheus text format (requires sessions:list)
+      description: >-
+        Counters and gauges only — session/task/credential counts, webhook
+        delivery totals, Go runtime gauges. Never includes credential
+        material or session identifiers.
+      tags: [System]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Prometheus text exposition format (version 0.0.4)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP worldc2_uptime_seconds Seconds since the server process started.
+                  # TYPE worldc2_uptime_seconds gauge
+                  worldc2_uptime_seconds 3600
+                  # HELP worldc2_sessions_active Sessions whose agent currently has a live transport connection.
+                  # TYPE worldc2_sessions_active gauge
+                  worldc2_sessions_active 3
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Insufficient permissions
+
   /api/sessions:
     get:
       summary: List active sessions
       tags: [Sessions]
       security:
         - BearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: >-
+            Optional time window in days (1-90): only sessions last seen
+            within the window are returned. Omit for the full listing.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
       responses:
         '200':
           description: List of active sessions
@@ -455,6 +495,17 @@ paths:
       tags: [Files]
       security:
         - BearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: >-
+            Optional time window in days (1-90): only loot records created
+            within the window are returned. Omit for the full listing.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
       responses:
         '200':
           description: List of files

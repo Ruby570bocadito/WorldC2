@@ -17,6 +17,17 @@
             @input="debouncedSearch"
           />
         </div>
+        <button
+          class="btn btn-ghost"
+          type="button"
+          :disabled="!creds.length"
+          title="Export the current listing (search filter included) as CSV"
+          aria-label="Export credentials as CSV"
+          @click="exportCSV"
+        >
+          <IconDownload :size="15" />
+          <span>Export CSV</span>
+        </button>
         <button class="btn btn-primary" type="button" @click="formOpen = !formOpen">
           <IconPlus :size="15" />
           <span>{{ formOpen ? 'Close' : 'New credential' }}</span>
@@ -130,6 +141,19 @@
         <span class="muted small">Loading vault…</span>
       </div>
     </div>
+
+    <!-- delete confirmation (replaces window.confirm — styled, explainer,
+         and impossible to confirm with an accidental Enter on the row) -->
+    <ConfirmModal
+      v-if="pendingDelete"
+      :title="'Delete credential ' + (pendingDelete.username || pendingDelete.id) + '?'"
+      message="The record is removed from the vault permanently. This cannot be undone."
+      confirm-label="Delete credential"
+      danger
+      :busy="deleting"
+      @confirm="doDelete"
+      @cancel="pendingDelete = null"
+    />
   </div>
 </template>
 
@@ -137,11 +161,13 @@
 import { api } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtDate } from '../utils/format.js'
-import { IconPlus, IconTrash, IconSearch, IconKey } from '../components/icons.js'
+import { toCSV, downloadText } from '../utils/csv.js'
+import ConfirmModal from '../components/ConfirmModal.vue'
+import { IconPlus, IconTrash, IconSearch, IconKey, IconDownload } from '../components/icons.js'
 
 export default {
   name: 'VaultView',
-  components: { IconPlus, IconTrash, IconSearch, IconKey },
+  components: { IconPlus, IconTrash, IconSearch, IconKey, IconDownload, ConfirmModal },
   data() {
     return {
       creds: [],
@@ -153,6 +179,8 @@ export default {
       clientError: '',
       revealed: {},
       searchTimer: null,
+      pendingDelete: null,
+      deleting: false,
     }
   },
   mounted() {
@@ -218,15 +246,21 @@ export default {
         this.creating = false
       }
     },
-    async remove(c) {
-      const label = c.username || c.id
-      const ok = window.confirm('Delete credential "' + label + '"? This cannot be undone.')
-      if (!ok) return
+    // Two-step delete: stage the row, let ConfirmModal collect the final
+    // decision, act only on its confirm event.
+    remove(c) {
+      this.pendingDelete = c
+    },
+    async doDelete() {
+      const c = this.pendingDelete
+      if (!c || this.deleting) return
+      this.deleting = true
       try {
         // DELETE /api/vault?id=... — admin only (vault:delete).
         await api.del('/api/vault?id=' + encodeURIComponent(c.id))
         notify.ok('Credential deleted')
         delete this.revealed[c.id]
+        this.pendingDelete = null
         this.fetchCreds()
       } catch (e) {
         if (e.status === 403) {
@@ -234,7 +268,24 @@ export default {
         } else if (!e.expired) {
           notify.error('Delete failed: ' + e.message)
         }
+      } finally {
+        this.deleting = false
       }
+    },
+    exportCSV() {
+      if (!this.creds.length) return
+      // Exports exactly what the operator is looking at: the active search
+      // filter stays applied. Passwords are included on purpose — this is a
+      // credential hand-off artifact for the engagement report; the CSV
+      // serializer formula-injection-guards every cell (csv.js).
+      const csv = toCSV(
+        ['username', 'password', 'domain', 'host', 'service', 'source', 'captured'],
+        this.creds,
+        ['username', 'password', 'domain', 'host', 'service', 'source', 'captured']
+      )
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadText('worldc2-vault-' + stamp + '.csv', csv)
+      notify.ok('Exported ' + this.creds.length + ' credential(s)')
     },
   },
 }

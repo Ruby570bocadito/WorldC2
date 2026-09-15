@@ -98,6 +98,9 @@ func (r *Router) Setup() *http.ServeMux {
 
 	// Authenticated operational telemetry (moved off the public health route)
 	mux.HandleFunc("/api/status", cors(auth(audit(rate(perm("sessions:list")(r.handleStatus))))))
+	// Prometheus-format metrics: same gate as /api/status (counts and
+	// gauges only — no credential material, no session identifiers).
+	mux.HandleFunc("/api/metrics", cors(auth(audit(rate(perm("sessions:list")(r.handleMetrics))))))
 
 	// Sessions
 	mux.HandleFunc("/api/sessions", cors(auth(audit(rate(perm("sessions:list")(r.handleListSessions))))))

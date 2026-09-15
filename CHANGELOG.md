@@ -1,5 +1,90 @@
 # WorldC2 — Changelog
 
+## v1.17.0 — Round 16: Prometheus metrics, time-window filters everywhere, vault CSV export, shared ConfirmModal, browser E2E suite (2026-09-15)
+
+Sixteenth round, the deepest and longest so far by operator request ("más
+profundas, intensas y largas"): the Implementaciones role ships **five**
+features (backend + frontend + tests each), the whole backlog of the r15
+Implementaciones report is consumed, and a Playwright suite turns the
+manual round-15 browser captures into executable regression armor.
+
+### Added (Implementaciones)
+
+- **`GET /api/metrics` in Prometheus text format** — operational gauges
+  (`worldc2_uptime_seconds`, `worldc2_sessions_active/total`,
+  `worldc2_tasks_total`, `worldc2_vault_credentials`,
+  `worldc2_files_stored`, `worldc2_webhooks_configured/delivered_total/
+  failed_total`, `worldc2_listeners`, `worldc2_go_goroutines`,
+  `worldc2_go_heap_alloc_bytes`), each with HELP/TYPE headers and bare
+  integer samples (no exponent formatting). Gated by `sessions:list` —
+  the same privilege as `/api/status` — and counts only: no credential
+  material, no session identifiers, no hostnames. Backed by a new
+  `db.CountTasks` (single `COUNT(*)`, no per-session fan-out). Pinned by
+  `TestMetricsContract` (401 unauthenticated, content-type
+  `text/plain; version=0.0.4`, all gauges present, no credential-shaped
+  strings, no exponent samples) and `TestMetricsValuesTrackReality` (the
+  vault gauge actually moves after an insert).
+- **`?days=1..90` on `/api/sessions` and `/api/files`** — the report's
+  round-15 window generalized: sessions are filtered by `last_seen`, loot
+  by `created`; parsing moved to a shared strict `parseDaysWindow` helper
+  (the report now uses it too — same 400 message, one contract). The
+  default (no parameter) keeps the full listing, so the 5 s console poll
+  and existing clients are untouched. The Sessions and Files views expose
+  an "All time / 24h / 7d / 30d / 90d" select wired to the parameter.
+  Pinned by `TestSessionsDaysWindow` and `TestFilesDaysWindow`
+  (backdated rows excluded on 7/90 boundaries, five invalid inputs →
+  400 each).
+- **Vault CSV export** — the Vault view gains an "Export CSV" button that
+  downloads the current listing (active search filter included) as
+  `worldc2-vault-YYYY-MM-DD.csv`. Serialization lives in
+  `web/src/utils/csv.js`: RFC 4180 quoting plus a **formula-injection
+  guard** — cells starting with `=`, `+`, `-`, `@`, tab or CR are
+  prefixed with `'`, because captured usernames/notes come from untrusted
+  hosts and a `=HYPERLINK(...)` must land as inert text in Excel/Sheets.
+  Verified end to end by the browser E2E suite (download event + filename).
+- **Shared `ConfirmModal` component** — replaces `window.confirm` for
+  vault deletes and session kill/purge. It cannot be accidentally
+  confirmed (Esc and backdrop always cancel, Enter never reaches the
+  destructive button because focus starts on Cancel), it explains WHAT is
+  about to be destroyed, and the destructive **purge** requires typing
+  `PURGE` (phrase-required variant, confirm disabled until exact match).
+  Busy-state aware so a slow DELETE cannot be double-fired. Covered by
+  the E2E suite (Esc-cancel pass, confirm pass, cancel pass).
+- **Browser E2E suite (`tests/e2e/`)** — the round-15 manual Playwright
+  captures become executable code: `@playwright/test` project driving the
+  real console (login → dashboard → sessions filters → vault
+  create/search/export/two-step-delete → logout). Canonical auth pattern:
+  a `setup` project logs in once and persists the JWT to
+  `.auth/operator.json` via `storageState` (the console keeps its token
+  in localStorage; gitignored), each spec still runs in an isolated
+  context, and the first test clears storage to exercise the real login
+  flow. Runnable via `make test-e2e` (`E2E_BASE_URL` / `E2E_USER` /
+  `E2E_PASS`); traces and screenshots retained on failure. The suite
+  passed 6/6 against a real server build during this round.
+
+### Changed (Pulimiento)
+
+- OpenAPI spec: `/api/metrics` documented (text format example, 401/403)
+  and `days` parameters on `/api/sessions` and `/api/files`; spec stays
+  `yaml.safe_load`-clean (mechanical check kept from r15).
+- README: five new feature rows (metrics, time windows, CSV export,
+  ConfirmModal, E2E suite) and the Development block gains `make test-e2e`.
+- DEVELOPER_GUIDE: metrics + days documented in the API quick reference,
+  a "Browser E2E (console)" section with design notes, and the duplicated
+  `## Development` heading (pre-existing defect) collapsed to one.
+- Makefile: `test-e2e` target; `.gitignore`: e2e `node_modules/`,
+  `test-results/`, `playwright-report/`, `.auth/`.
+
+### Verified (Bugs/Seguridad + full suite)
+
+- Security review of the new surface: metrics leak-check (counts only),
+  `days` overflow rejection (`99999999999999999999` → 400 before any
+  `time.Duration` arithmetic), CSV formula-injection guard, ConfirmModal
+  Esc-only-cancel semantics, `SetDB` wiring mirrored in tests.
+- Full `go test -race ./...` green (13 packages with tests), `go vet`,
+  `gofmt`, `npm run build`, `yaml.safe_load` and the 6/6 Playwright run
+  against a live server binary.
+
 ## v1.16.0 — Round 15: dedicated vault console, webhook delivery ledger, report time window, multi-header webhook form (2026-09-15)
 
 Fifteenth round, single-agent flow, deliberately **implementation-heavy** by

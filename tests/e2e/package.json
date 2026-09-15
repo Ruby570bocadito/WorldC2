@@ -1,0 +1,13 @@
+{
+  "name": "worldc2-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end browser tests for the WorldC2 operator console (Playwright).",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

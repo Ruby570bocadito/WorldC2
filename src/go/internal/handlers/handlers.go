@@ -188,10 +188,28 @@ func (r *Router) handleStatus(w http.ResponseWriter, req *http.Request) {
 }
 
 // handleListSessions returns all active sessions.
+// Round 16: ?days=N (1-90) narrows the response to sessions last seen
+// within the window — the same strict shared parser the report uses. The
+// default (no parameter) stays "everything", so the 5s console poll and
+// existing clients are unaffected.
 func (r *Router) handleListSessions(w http.ResponseWriter, req *http.Request) {
+	windowStart, ok := parseDaysWindow(w, req)
+	if !ok {
+		return
+	}
 	sessions, _ := r.server.DB().ListActiveSessions()
 	if sessions == nil {
 		sessions = []db.SessionRecord{}
+	}
+	if !windowStart.IsZero() {
+		filtered := sessions[:0]
+		for _, s := range sessions {
+			if s.LastSeen.Before(windowStart) {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		sessions = filtered
 	}
 	json.NewEncoder(w).Encode(sessions)
 }
@@ -545,7 +563,24 @@ func (r *Router) handleFiles(w http.ResponseWriter, req *http.Request) {
 		json.NewEncoder(w).Encode(rec)
 		return
 	}
-	json.NewEncoder(w).Encode(r.server.Files().List())
+	// Round 16: ?days=N (1-90) on the listing narrows loot to records
+	// created within the window; default stays "everything".
+	windowStart, ok := parseDaysWindow(w, req)
+	if !ok {
+		return
+	}
+	records := r.server.Files().List()
+	if !windowStart.IsZero() {
+		filtered := records[:0]
+		for _, f := range records {
+			if f.Created.Before(windowStart) {
+				continue
+			}
+			filtered = append(filtered, f)
+		}
+		records = filtered
+	}
+	json.NewEncoder(w).Encode(records)
 }
 
 // handleFileDownload downloads an exfiltrated file.
@@ -884,16 +919,15 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	// a window that only changed labels would be a lie in a report meant
 	// to be handed to a client. Capped at 90 so the "full history" pull is
 	// always an explicit ?days=90 decision, never a fat-fingered number.
-	days := 1
-	if raw := req.URL.Query().Get("days"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > 90 {
-			http.Error(w, `{"error":"days must be an integer between 1 and 90"}`, 400)
-			return
-		}
-		days = n
+	// Round 16: parsing moved to the shared parseDaysWindow helper (same
+	// strict 1..90 contract now used by /api/sessions and /api/files).
+	windowStart, ok := parseDaysWindow(w, req)
+	if !ok {
+		return
 	}
-	windowStart := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	if windowStart.IsZero() {
+		windowStart = time.Now().Add(-24 * time.Hour)
+	}
 
 	sessions, err := r.server.DB().ListAllSessions()
 	if err != nil {

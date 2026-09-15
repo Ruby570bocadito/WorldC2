@@ -48,6 +48,13 @@
         <option value="all">All sessions</option>
         <option v-for="s in sessions" :key="s" :value="s">{{ shortId(s, 12) }}</option>
       </select>
+      <select v-model="daysFilter" class="select filter-select" aria-label="Time window" title="Show only files captured within this window">
+        <option value="0">All time</option>
+        <option value="1">Last 24h</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
       <select v-model="moduleFilter" class="select filter-select" aria-label="Module filter">
         <option value="all">All modules</option>
         <option v-for="m in modules" :key="m" :value="m">{{ m }}</option>
@@ -168,6 +175,8 @@ export default {
       query: '',
       sessionFilter: 'all',
       moduleFilter: 'all',
+      // 0 = all time; >0 maps to the ?days= API window.
+      daysFilter: '0',
       sortKey: 'created',
       sortDir: -1,
       timer: null,
@@ -231,7 +240,11 @@ export default {
     shortId,
     async fetchFiles() {
       try {
-        const data = await api.get('/api/files')
+        // ?days=N is the server-side window (round 16); 0/absent keeps the
+        // payload identical to the previous behavior.
+        const days = parseInt(this.daysFilter, 10)
+        const path = days > 0 ? '/api/files?days=' + days : '/api/files'
+        const data = await api.get(path)
         this.files = Array.isArray(data) ? data : []
       } catch (e) {
         if (!e.expired) notify.error('Failed to load files: ' + e.message)

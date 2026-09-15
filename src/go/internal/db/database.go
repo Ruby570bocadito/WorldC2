@@ -368,6 +368,21 @@ func (d *DB) GetSessionTasks(sessionID string) ([]TaskRecord, error) {
 	return scanTasks(rows)
 }
 
+// CountTasks returns the total number of task records across every
+// session. Used by /api/metrics: a single COUNT(*) scales with nothing,
+// while counting per session in Go would multiply queries by sessions.
+func (d *DB) CountTasks() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var n int
+	err := d.conn.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // --- Operator operations ---
 
 // CreateOperator creates a new operator with bcrypt-hashed password.

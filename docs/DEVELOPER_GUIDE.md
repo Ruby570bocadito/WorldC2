@@ -156,7 +156,8 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 |--------|------|------|-------------|
 | GET | `/api/health` | No | Liveness only (`{"status":"ok"}` — no telemetry) |
 | GET | `/api/status` | Yes | Operational telemetry: active sessions, listeners, uptime (`sessions:list`) |
-| GET | `/api/sessions` | Yes | List sessions (includes `AgentVersion`, `Transport`, `Privilege`, `Fingerprint` observability fields) |
+| GET | `/api/metrics` | Yes | Operational metrics in **Prometheus text format** (round 16, `sessions:list`): gauges for sessions active/total, tasks, vault count, loot count, webhook delivery ledger, listeners, uptime and Go runtime. Counts only — never credential material or session identifiers. Scrapes are per-request queries (no stale cache) |
+| GET | `/api/sessions` | Yes | List sessions (includes `AgentVersion`, `Transport`, `Privilege`, `Fingerprint` observability fields). Round 16: optional `?days=1..90` window — sessions last seen before the cutoff are excluded; the shared `parseDaysWindow` answers 400 on `0`, negatives, `>90`, non-numeric or overflowing values; no parameter keeps the full listing |
 | GET | `/api/sessions/:id` | Yes | Session detail |
 | DELETE | `/api/sessions/:id` | Yes | Kill agent; add `?purge=true` to hard-delete the record together with its tasks and persisted loot (`sessions:kill`) |
 | POST | `/api/cmd` | Yes | Execute command |
@@ -164,7 +165,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET | `/api/vault` | Yes | List credentials (`vault:read`); search with `?q=...` (round 15: the term is capped at 256 characters — longer answers 400) |
 | POST | `/api/vault` | Yes | Store credential (`vault:create`). Round-14 caps (transversal pass): `username` ≤ 128, `password` ≤ 512, `domain` ≤ 128, `host` ≤ 255, `service` ≤ 64, `source` ≤ 128, `notes` ≤ 2000; at least one identifying field (username/password/domain/host/service/source) must be non-empty; non-GET/POST methods answer 405. Round 15: persistence errors now surface as 500 — the old flow logged the failure and still answered `{id, status:"stored"}` for a row that was never saved; IDs are crypto/rand `cred-<hex>` (were predictable `cred-<UnixNano>`) |
 | DELETE | `/api/vault?id=...` | Admin | Delete a single credential (`vault:delete` — the permission existed in rbac.go since day one, round 15 wires the endpoint). 404 on unknown ids; the console Vault view exposes it with a confirm dialog |
-| GET | `/api/files` | Yes | List files (current run + persisted `file_records` rows from previous runs) |
+| GET | `/api/files` | Yes | List files (current run + persisted `file_records` rows from previous runs). Round 16: optional `?days=1..90` window on `created`; same strict parser and default as sessions |
 | POST | `/api/files` | Yes | Upload file |
 | DELETE | `/api/files` | Yes | Purge ALL loot — blobs on disk, current listing and persisted rows (`files:delete`, same capability as the single-file route) |
 | GET | `/api/modules` | Yes | List modules |
@@ -256,7 +257,6 @@ are validated against the same permission strings.
    session detail panel.
 
 ## Development
-## Development
 
 ### Build
 ```bash
@@ -273,6 +273,26 @@ python3 tests/stress_test.py      # Stress
 python3 tests/integration_test.py # Integration
 python3 tests/benchmark.py        # Performance
 ```
+
+### Browser E2E (console)
+`tests/e2e/` hosts a Playwright suite (round 16) that drives the real console
+end to end: login, dashboard render, sessions filters (including the `?days=`
+select), vault create → debounced search → CSV export → two-step delete
+(`ConfirmModal`: Esc cancels, purge-style variants require typing a phrase)
+and logout.
+
+```bash
+cd tests/e2e && npm install && npx playwright install chromium   # once
+make test-e2e                        # against a running server on :19090
+E2E_BASE_URL=https://c2.lab:8443 E2E_USER=alice E2E_PASS='...' make test-e2e
+```
+
+Design notes: a `setup` project logs in once and stores the JWT
+(`.auth/operator.json`, gitignored) via `storageState` — the console keeps its
+token in localStorage, so plain cookie state would not authenticate the tests;
+every spec still runs in an isolated context. The first test clears storage and
+performs a real login so the authentication flow itself stays covered. Run it
+against a throwaway server only: the suite creates and deletes real credentials.
 
 ### Security Audit
 ```bash

@@ -147,6 +147,12 @@ export const IconActivity = icon('Activity', [
   p('M3 12.5h3.5l2.5-6.5 4.5 12 2.5-5.5H21'),
 ])
 
+export const IconAlert = icon('Alert', [
+  p('M12 4L2.8 20h18.4z'),
+  p('M12 10v4.5'),
+  c(12, 17.2, 0.4),
+])
+
 export const IconKey = icon('Key', [
   c(8, 14.5, 4),
   p('M11 11.5L20 3'),
