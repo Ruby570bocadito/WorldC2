@@ -236,6 +236,9 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 }
 .select option { background: var(--surface); color: var(--text); }
 
+/* Compact select variant for toolbars/page-head (matches .btn-sm). */
+.select-sm { height: 28px; font-size: 12px; padding-right: 28px; width: auto; }
+
 .field-label {
   display: block;
   font-size: 12px;

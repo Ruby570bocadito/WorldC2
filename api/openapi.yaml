@@ -867,9 +867,26 @@ paths:
       tags: [Reporting]
       security:
         - BearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [text, csv, json]
+            default: text
+          description: Report format. Unknown values answer 400 (round 14; they used to fall through to the text generator).
+        - name: download
+          in: query
+          schema:
+            type: string
+            enum: ["1"]
+          description: When "1", the report CONTENT is served as an attachment (Content-Disposition, format-appropriate Content-Type). Without it the response is the JSON envelope {path, status}.
       responses:
         '200':
-          description: Report generation result (JSON with output path and status)
+          description: >
+            Report generation result. Without download=1: JSON envelope with the
+            server-side output path and status. With download=1: the report bytes
+            (text/csv/json) as a downloadable attachment.
           content:
             application/json:
               schema:
@@ -879,6 +896,12 @@ paths:
                     type: string
                   status:
                     type: string
+            text/plain:
+              schema:
+                type: string
+            text/csv:
+              schema:
+                type: string
 
   /api/webhooks:
     get:
@@ -905,9 +928,9 @@ paths:
                       type: object
                       additionalProperties:
                         type: string
-                    timeout:
+                    timeout_ms:
                       type: number
-                      description: Forwarding timeout in nanoseconds (Go duration)
+                      description: Forwarding timeout in milliseconds (round-13 contract; the raw struct's nanosecond Duration is never serialized)
                     events:
                       type: array
                       items:

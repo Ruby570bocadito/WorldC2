@@ -1,5 +1,78 @@
 # WorldC2 — Changelog
 
+## v1.15.0 — Round 14: report content delivery, report format selector, SIEM forwarder E2E tests, transversal validation part 2 (2026-09-15)
+
+Fourteenth round, first executed by the single-agent flow (one IA playing
+Director → Implementaciones → Pulimiento → Bugs/Seguridad in sequence).
+Reports live in `docs/agentes/`.
+
+### Fixed (Bugs/Seguridad)
+
+- **The engagement report now downloads its CONTENT** — the round-13 Dashboard
+  button fetched `GET /api/report` and saved the response blob as
+  `worldc2-report.txt`, but the handler answered the JSON envelope
+  `{path, status}`: the operator saved a pointer to a server-side file, never
+  the report. `GET /api/report?download=1` now serves the report bytes as an
+  attachment (`Content-Disposition`, format-appropriate `Content-Type`); the
+  default response keeps the documented `{path, status}` contract. Pinned by
+  `TestReportDownload` (content, headers, all three formats).
+- **`GenerateText` crashed on short task session ids** — `SessionID[:8]`
+  panicked for ids shorter than 8 characters (found by the new generator
+  contract test); replaced with a `safePrefix` guard mirroring the existing
+  command truncation.
+- **Vault entries are length-capped (transversal pass part 2)** — every
+  `POST /api/vault` string field is bounded (`username` ≤ 128, `password` ≤ 512,
+  `domain` ≤ 128, `host` ≤ 255, `service` ≤ 64, `source` ≤ 128, `notes` ≤ 2000)
+  and at least one identifying field must be non-empty; rows live in SQLite
+  forever, so unbounded bodies were a disk-fill vector. Non-GET/POST methods
+  answer 405 instead of falling through to the listing. Pinned by
+  `TestVaultValidation`.
+- **mTLS `agent_id` validated before becoming a certificate CN** — the value
+  went straight into the X.509 CommonName (up to the 1 MiB body limit, control
+  characters and slashes included). Now 1–64 characters of `[A-Za-z0-9._-]`
+  (conventional ub-common-name bound), rejected with 400 before the
+  mTLS-enabled gate; the valid path is pinned down to the issued certificate's
+  CommonName by `TestMTLSCertValidation`.
+- **`format=json` really produces JSON** — the API advertised text/csv/json
+  since its first day, but any non-csv value fell through to the text
+  generator; a new `GenerateJSON` (round-trip pinned by `TestGenerateJSON`)
+  backs the advertised format, and unknown formats answer 400 instead of
+  returning the wrong bytes with a 200.
+
+### Added (Implementaciones)
+
+- **Report format selector on the Dashboard** — Text/CSV/JSON select next to
+  the Download report button (compact `.select-sm` variant of the design
+  system), downloading via the fixed `download=1` mode with a per-format
+  filename.
+- **SIEM forwarder E2E tests** — the `internal/siem` package ships its first
+  tests: a local `httptest` receiver proves the queued event is really POSTed
+  on the wire with its custom headers, that event-type filtering holds (a
+  non-matching event is never delivered) and that a 500 from the destination
+  does not wedge the forwarder.
+- **Report generator contract tests** — text, CSV and JSON branches of the
+  handler switch are each pinned (`internal/reporting`, previously untested).
+
+### Documentation (Pulimiento)
+
+- `api/openapi.yaml` aligned with the real contracts: GET /api/webhooks now
+  documents `timeout_ms` in milliseconds (still said nanosecond `timeout`),
+  and /api/report documents the `format` allowlist and the `download=1` mode.
+- README: engagement-report row updated (content download + format selector)
+  and the Console gallery gains Profiles and Webhooks screenshots
+  (`docs/assets/profiles.png`, `docs/assets/webhooks.png`; dashboard
+  recaptured with the selector).
+- DEVELOPER_GUIDE: vault caps, report contract (`download=1`, strict formats)
+  and the mTLS `agent_id` policy. gofmt normalized; zero new dependencies.
+
+### Tests
+
+- `internal/handlers` (new `validation2_test.go`): `TestReportDownload`,
+  `TestVaultValidation`, `TestMTLSCertValidation`.
+- `internal/reporting` (new): `TestGenerateJSON`, `TestGenerateTextAndCSV`.
+- `internal/siem` (new): `TestForwarderDeliversRealPOST`,
+  `TestForwarderEventFilter`, `TestForwarderRejectsServerError`.
+
 ## v1.14.0 — Round 13: Webhooks console view, Dashboard report, transversal input validation (2026-09-14)
 
 Thirteenth round executed by the four-agent flow (Director → Implementaciones →

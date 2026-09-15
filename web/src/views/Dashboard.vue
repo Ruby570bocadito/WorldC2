@@ -6,6 +6,11 @@
         <p class="page-sub">Operational overview · refreshed every 5s</p>
       </div>
       <div class="head-side">
+        <select v-if="canReport" v-model="reportFormat" class="select select-sm" aria-label="Report format" :disabled="reportBusy">
+          <option value="text">Text</option>
+          <option value="csv">CSV</option>
+          <option value="json">JSON</option>
+        </select>
         <button v-if="canReport" class="btn btn-ghost btn-sm" type="button" :disabled="reportBusy" @click="downloadReport">
           <span v-if="reportBusy" class="spinner" />
           <span>{{ reportBusy ? 'Generating…' : 'Download report' }}</span>
@@ -182,6 +187,7 @@ export default {
       outputError: false,
       // engagement report
       reportBusy: false,
+      reportFormat: 'text',
     }
   },
   computed: {
@@ -272,9 +278,11 @@ export default {
     async downloadReport() {
       if (this.reportBusy) return
       this.reportBusy = true
+      const fmt = ['text', 'csv', 'json'].includes(this.reportFormat) ? this.reportFormat : 'text'
       try {
-        // GET /api/report?format=text (report:generate — admin/operator)
-        await downloadFile('/api/report?format=text', 'worldc2-report.txt')
+        // GET /api/report?format=<fmt>&download=1 (report:generate — admin/operator);
+        // download=1 makes the API serve the report content as an attachment.
+        await downloadFile(`/api/report?format=${fmt}&download=1`, `worldc2-report.${fmt === 'csv' ? 'csv' : fmt === 'json' ? 'json' : 'txt'}`)
         notify.ok('Engagement report downloaded')
       } catch (e) {
         if (!e.expired) notify.error('Report failed: ' + e.message)

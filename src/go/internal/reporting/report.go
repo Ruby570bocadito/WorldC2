@@ -2,6 +2,7 @@ package reporting
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -183,7 +184,11 @@ func (rg *ReportGenerator) GenerateText(report *EngagementReport) (string, error
 		if !t.Success {
 			status = "✗"
 		}
-		sb.WriteString(fmt.Sprintf("  %s %s | %s\n", status, t.Command[:min(len(t.Command), 50)], t.SessionID[:8]))
+		// Round 14: SessionID[:8] panicked on shorter ids (the
+		// struct accepts any string; the round-14 generator test
+		// crashed with a 3-char id). safePrefix mirrors the
+		// Command[:min(…,50)] truncation above.
+		sb.WriteString(fmt.Sprintf("  %s %s | %s\n", status, t.Command[:min(len(t.Command), 50)], safePrefix(t.SessionID, 8)))
 	}
 
 	sb.WriteString("\n══════════════════════════════════════════════\n")
@@ -194,9 +199,35 @@ func (rg *ReportGenerator) GenerateText(report *EngagementReport) (string, error
 	return path, nil
 }
 
+// GenerateJSON creates a machine-readable JSON report (added in round 14:
+// the API advertised format=json but the handler silently fell back to the
+// text generator — clients selecting JSON got text bytes).
+func (rg *ReportGenerator) GenerateJSON(report *EngagementReport) (string, error) {
+	filename := fmt.Sprintf("engagement_%s.json", time.Now().Format("20060102_150405"))
+	path := filepath.Join(rg.reportDir, filename)
+
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal JSON report: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return "", fmt.Errorf("write JSON report: %w", err)
+	}
+	return path, nil
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
+}
+
+// safePrefix returns s when it is shorter than n, otherwise its first n
+// characters (a plain s[:n] panics on short strings).
+func safePrefix(s string, n int) string {
+	if len(s) < n {
+		return s
+	}
+	return s[:n]
 }

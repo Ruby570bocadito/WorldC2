@@ -16,6 +16,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -399,10 +401,26 @@ func (r *Router) handleSOCKS(w http.ResponseWriter, req *http.Request) {
 
 // handleVault manages the credential vault.
 func (r *Router) handleVault(w http.ResponseWriter, req *http.Request) {
+	// Round-14 method hygiene: anything that is not a read or a create
+	// used to fall through to the listing (a PUT answered the full vault).
+	switch req.Method {
+	case http.MethodPost, http.MethodGet, http.MethodHead, http.MethodOptions:
+	default:
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
 	if req.Method == "POST" {
 		var c c2.Credential
 		if err := json.NewDecoder(req.Body).Decode(&c); err != nil {
 			http.Error(w, "invalid JSON", 400)
+			return
+		}
+		// Round-14 caps (transversal pass part 2): vault rows are
+		// permanent SQLite entries, so unbounded fields are a disk-fill
+		// vector — the same pattern notes got in round 13.
+		if err := validateCredential(&c); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), 400)
 			return
 		}
 		id := r.server.Vault().Add(c)
@@ -415,6 +433,38 @@ func (r *Router) handleVault(w http.ResponseWriter, req *http.Request) {
 	} else {
 		json.NewEncoder(w).Encode(r.server.Vault().List())
 	}
+}
+
+// validateCredential enforces the round-14 transversal caps on vault
+// entries: every string field is bounded, and at least one identifying
+// field must be present (a row with nothing in it is pure noise).
+func validateCredential(c *c2.Credential) error {
+	fields := []struct {
+		name string
+		val  string
+		max  int
+	}{
+		{"username", c.Username, 128},
+		{"password", c.Password, 512},
+		{"domain", c.Domain, 128},
+		{"host", c.Host, 255},
+		{"service", c.Service, 64},
+		{"source", c.Source, 128},
+		{"notes", c.Notes, 2000},
+	}
+	meaningful := false
+	for _, f := range fields {
+		if len(f.val) > f.max {
+			return fmt.Errorf("%s must be %d characters or fewer", f.name, f.max)
+		}
+		if f.name != "notes" && f.val != "" {
+			meaningful = true
+		}
+	}
+	if !meaningful {
+		return fmt.Errorf("credential needs at least one of username, password, domain, host, service or source")
+	}
+	return nil
 }
 
 // handleFiles manages exfiltrated files.
@@ -778,6 +828,14 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	if format == "" {
 		format = "text"
 	}
+	switch format {
+	case "text", "csv", "json":
+	default:
+		// Unknown formats used to fall through to the text generator
+		// silently; a typo'd curl got the wrong bytes with a 200.
+		http.Error(w, `{"error":"format must be text, csv or json"}`, 400)
+		return
+	}
 
 	sessions, err := r.server.DB().ListAllSessions()
 	if err != nil {
@@ -833,14 +891,42 @@ func (r *Router) handleReport(w http.ResponseWriter, req *http.Request) {
 	report.Summary.UniqueHosts = len(report.Summary.UniqueOS)
 
 	var path string
-	if format == "csv" {
+	switch format {
+	case "csv":
 		path, err = r.server.Reporter().GenerateCSV(report)
-	} else {
+	case "json":
+		// Round 14: format=json was advertised (README, OpenAPI) but the
+		// handler silently produced the text report instead.
+		path, err = r.server.Reporter().GenerateJSON(report)
+	default:
 		path, err = r.server.Reporter().GenerateText(report)
 	}
 
 	if err != nil {
 		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	// Round 14: ?download=1 serves the report CONTENT as a download.
+	// Without it the default response is the documented JSON envelope
+	// {path, status} — which the round-13 Dashboard button mistakenly
+	// saved to disk as worldc2-report.txt (metadata, never the report).
+	if req.URL.Query().Get("download") == "1" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		ct := "text/plain; charset=utf-8"
+		switch format {
+		case "csv":
+			ct = "text/csv; charset=utf-8"
+		case "json":
+			ct = "application/json"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
+		w.Write(data)
 		return
 	}
 
@@ -1016,11 +1102,6 @@ func (r *Router) handleMTLSCert(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !r.server.MTLSEnabled() {
-		http.Error(w, `{"error":"mTLS not enabled"}`, 500)
-		return
-	}
-
 	var certReq struct {
 		AgentID string `json:"agent_id"`
 	}
@@ -1028,8 +1109,24 @@ func (r *Router) handleMTLSCert(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "invalid JSON", 400)
 		return
 	}
+
+	// Round-14 validation (transversal pass part 2): the agent_id
+	// becomes the X.509 CommonName, so it is capped at the conventional
+	// 64-char ub-common-name and restricted to a safe charset. Until
+	// now any string up to the 1 MiB body limit — control characters,
+	// slashes, whatever — went straight into a certificate signed by
+	// the engagement CA. Validation deliberately runs BEFORE the mTLS
+	// enabled check: malformed input answers 400 regardless of config.
 	if certReq.AgentID == "" {
 		certReq.AgentID = fmt.Sprintf("agent-%x", time.Now().UnixNano())
+	} else if len(certReq.AgentID) > 64 || !validAgentID(certReq.AgentID) {
+		http.Error(w, `{"error":"agent_id must be 1-64 characters of [A-Za-z0-9._-]"}`, 400)
+		return
+	}
+
+	if !r.server.MTLSEnabled() {
+		http.Error(w, `{"error":"mTLS not enabled"}`, 500)
+		return
 	}
 
 	agentCert, err := crypto.GenerateAgentCert(r.server.CACert(), r.server.CAKey(), certReq.AgentID)
@@ -1053,4 +1150,21 @@ func (r *Router) handleMTLSCert(w http.ResponseWriter, req *http.Request) {
 		"ca_pem":      string(caPEM),
 		"mtls_server": fmt.Sprintf("%s:%d", r.server.Config().Server.Host, r.server.Config().Server.Port),
 	})
+}
+
+// validAgentID reports whether s is a safe CommonName for an agent
+// certificate: alphanumeric plus dot, underscore and dash, no spaces or
+// control characters.
+func validAgentID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
