@@ -470,12 +470,16 @@ func (d *DB) GetSessionTasksPage(sessionID string, limit int, beforeRaw, beforeI
 // AuditRecord is one row of the audit_log table: a timestamped operator or
 // system event (api_call, auth_failed, task, session_killed...). Detail is
 // an operator-facing description — it may contain usernames and IPs, which
-// is exactly why the read API is admin-only.
+// is exactly why the read API is admin-only. Operator is the account the
+// event is attributed to (resolved via LEFT JOIN from operator_id; empty
+// for system events such as task/session lifecycle written by the C2 core
+// with operator_id 0).
 type AuditRecord struct {
-	ID      int
-	Action  string
-	Detail  string
-	Created time.Time
+	ID       int
+	Action   string
+	Detail   string
+	Operator string
+	Created  time.Time
 }
 
 // MaxAuditPage bounds ListAuditEntries the same way MaxTaskPage bounds
@@ -484,10 +488,15 @@ type AuditRecord struct {
 const MaxAuditPage = 500
 
 // ListAuditEntries returns the newest audit entries, newest first. action
-// (optional) filters to one event type (exact match). limit <= 0 selects
-// maxAuditPage; larger values are clamped. The audit trail is append-only
-// by design — there is intentionally no update or delete path.
-func (d *DB) ListAuditEntries(limit int, action string) ([]AuditRecord, error) {
+// (optional) filters to one event type (exact match); user (optional)
+// filters to one operator username (exact match via the JOIN — rows with
+// operator_id 0, i.e. system events, are excluded under a user filter,
+// which is the honest semantics of "what did THIS account do"). limit <= 0
+// selects MaxAuditPage; larger values are clamped. Both filters are bound
+// as parameters. The trail is append-only by design — retention (the only
+// delete path) lives in PruneAuditOlderThan, a product policy, not a
+// per-request mutation.
+func (d *DB) ListAuditEntries(limit int, action, user string) ([]AuditRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -498,13 +507,23 @@ func (d *DB) ListAuditEntries(limit int, action string) ([]AuditRecord, error) {
 		limit = MaxAuditPage
 	}
 
-	q := `SELECT id, action, detail, timestamp FROM audit_log`
+	q := `SELECT a.id, a.action, a.detail, COALESCE(o.username, ''), a.timestamp
+              FROM audit_log a LEFT JOIN operators o ON o.id = a.operator_id`
 	args := []interface{}{}
 	if action != "" {
-		q += ` WHERE action = ?`
+		q += ` WHERE a.action = ?`
 		args = append(args, action)
 	}
-	q += ` ORDER BY id DESC LIMIT ?`
+	if user != "" {
+		if action != "" {
+			q += ` AND`
+		} else {
+			q += ` WHERE`
+		}
+		q += ` o.username = ?`
+		args = append(args, user)
+	}
+	q += ` ORDER BY a.id DESC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := d.conn.Query(q, args...)
@@ -516,12 +535,52 @@ func (d *DB) ListAuditEntries(limit int, action string) ([]AuditRecord, error) {
 	var out []AuditRecord
 	for rows.Next() {
 		var rec AuditRecord
-		if err := rows.Scan(&rec.ID, &rec.Action, &rec.Detail, &rec.Created); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.Action, &rec.Detail, &rec.Operator, &rec.Created); err != nil {
 			return nil, err
 		}
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+// CountAuditEntries returns the total number of audit rows. Feeds the
+// worldc2_audit_entries gauge so an operator can watch trail growth (and
+// the effect of a retention policy) from Prometheus instead of opening
+// the SQLite file.
+func (d *DB) CountAuditEntries() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var n int
+	err := d.conn.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// PruneAuditOlderThan deletes audit rows older than the given number of
+// days and returns how many rows it removed. This is the ONE delete path
+// on the append-only trail, and it exists by explicit product policy:
+// without it the trail grows without bound (see the r17 risk register),
+// and a table that is 99% stale rows makes the interesting 1% harder to
+// find. The timestamp column is written by SQLite's CURRENT_TIMESTAMP
+// (UTC "YYYY-MM-DD HH:MM:SS"), so the comparison runs in SQLite's own
+// datetime arithmetic with the modifier bound as a parameter.
+// days <= 0 is a no-op returning 0 — retention disabled.
+func (d *DB) PruneAuditOlderThan(days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`DELETE FROM audit_log WHERE timestamp < datetime('now', ?)`,
+		fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return 0, fmt.Errorf("prune audit: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // CountTasks returns the total number of task records across every
@@ -592,23 +651,26 @@ func (d *DB) AuthenticateOperator(username, password string) (*OperatorRecord, e
 	return op, nil
 }
 
-// OperatorExists reports whether an operator account with the given username
-// exists. The auth middleware consults this on every request so a deleted
-// operator's outstanding JWTs are rejected immediately — and stay rejected
-// across restarts, where the in-memory revocation map loses its entries.
-func (d *DB) OperatorExists(username string) (bool, error) {
+// OperatorIDByUsername resolves an operator's numeric primary key. The auth
+// middleware calls it on every request: the existence check (a deleted
+// operator's outstanding JWTs must not keep working — across restarts too,
+// where the in-memory revocation map loses its entries) and the resolution
+// of the numeric id the audit middleware attributes the call with are ONE
+// indexed lookup. Returns (0, nil) — not an error — for an unknown
+// username: the caller treats 0 as "does not exist".
+func (d *DB) OperatorIDByUsername(username string) (int, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	var one int
-	err := d.conn.QueryRow(`SELECT 1 FROM operators WHERE username=?`, username).Scan(&one)
+	var id int
+	err := d.conn.QueryRow(`SELECT id FROM operators WHERE username=?`, username).Scan(&id)
 	if err == sql.ErrNoRows {
-		return false, nil
+		return 0, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("check operator: %w", err)
+		return 0, fmt.Errorf("resolve operator id: %w", err)
 	}
-	return true, nil
+	return id, nil
 }
 
 // GetOperatorByID fetches an operator by its numeric primary key, without

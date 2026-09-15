@@ -174,7 +174,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/POST/DELETE | `/api/socks` | Yes | SOCKS proxy |
 | GET/POST/DELETE | `/api/portfwd` | Yes | Port forwarding |
 | GET/POST/DELETE | `/api/operators` | Admin | Operator management |
-| GET | `/api/audit` | `audit:read` | Read the append-only audit trail (round 17) — every API call, auth event and lifecycle action has been logged to `audit_log` by middleware since round 1; this is its read API. `?limit=1..500` (default 500, server-clamped) and `?action=<exact type>` (≤ 64 chars; unknown values return an empty array). Newest first; entries are `{id, action, detail, created}`. The permission belongs to admin and auditor (rbac.go) — the matrix below has documented it since the early rounds; round 17 wires the endpoint to it |
+| GET | `/api/audit` | `audit:read` | Read the append-only audit trail (round 17) — every API call, auth event and lifecycle action has been logged to `audit_log` by middleware since round 1; this is its read API. `?limit=1..500` (default 500, server-clamped), `?action=<exact type>` (≤ 64 chars; unknown values return an empty array) and — since round 18 — `?user=<exact username>`: the middleware now resolves each authenticated caller's numeric id (X-Auth-UID) and the trail stores it, so per-account attribution is a JOIN, not a text search; entries are `{id, action, detail, operator, created}` with `operator` empty for system events. Retention (the ONLY delete path) lives in `audit.retention_days` — pruned at startup and hourly, counted in `worldc2_audit_pruned_total` |
 | POST | `/api/login` | No | Authenticate, returns access + refresh JWT |
 | POST | `/api/refresh` | No | Rotate: consumes the presented refresh token and returns a new access token **plus a new refresh token** (store both; replaying a consumed refresh returns 401) |
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
@@ -186,6 +186,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | DELETE | `/api/profiles/:id` | Yes | Delete an agent profile (`collab:write`); 404 on unknown ids, 400 on control characters in the id |
 | GET | `/api/report` | Yes | Generate engagement report (`report:generate`). `format` = `text` (default) / `csv` / `json` — anything else answers 400. `days` = 1..90 (default 1, round 15) sets the report window and **filters** the content: sessions with `last_seen` before the cutoff and credentials captured before it are excluded, and `Summary.TotalSessions/TotalCredentials` count the filtered rows (they used to be seeded pre-filter). Default response is the JSON envelope `{path, status}`; add `&download=1` to receive the report CONTENT as an attachment (`Content-Disposition`, correct `Content-Type` per format) — the console's Download report button uses this mode |
 | GET/POST/DELETE | `/api/webhooks` | Admin | SIEM webhook destinations (persisted in `webhooks`, migration 9; re-hydrated on start; DELETE takes `?id=...` from the POST response). POST validation (round 13): absolute http(s) URL ≤ 2048 chars, ≤ 16 headers (keys ≤ 128 non-empty, values ≤ 1024), `timeout_ms` 100–60000 (0 → default 5000 — the old 0 meant an unlimited client timeout), `events` entries validated against the event-type allowlist (empty list = forward everything). GET answers `id/url/headers/timeout_ms/events/stats` with the timeout in milliseconds and a per-destination **delivery ledger** (round 15): `delivered`/`failed` counters, `last_delivery` (RFC3339) and `last_status` (`"ok"` or `"error: ..."` capped at 200 chars). Removing a webhook drops its ledger; deliveries in flight for a removed ID are not recorded |
+| POST | `/api/webhooks/test?id=...` | Admin | Fire ONE synthetic test event at a destination (round 18): synchronous, bounded by the destination timeout, answer `{"delivered": true}` or 200 `{"delivered": false, "error": "..."}` — a dead endpoint is the RESULT, not a server error. The attempt folds into the same ledger; the synthetic event carries only the destination id and a constant note (no engagement data) and deliberately bypasses the event-type subscription (reachability is the point) |
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate. `agent_id` (optional — auto-generated when empty) becomes the X.509 CommonName and is validated: 1–64 characters of `[A-Za-z0-9._-]`, else 400; validation runs before the mTLS-enabled gate |
 | GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator — resolves the account by numeric id, revokes its JWTs by username, 404 on unknown ids |
 
@@ -284,7 +285,17 @@ and logout. Round 17 adds `round17.spec.js`: the audit-log view (live entries
 + filters), the Files view (seeded through the real `POST /api/files`, export
 CSV download event, purge modal Esc-cancel) and the Dashboard SIEM webhook
 health panel (a webhook is registered through the real API and the panel must
-appear). All seeds go through the real HTTP API — never test hooks.
+appear). Round 18 adds `round18.spec.js`: the command palette (Ctrl+K opens,
+filters, `Enter` navigates to Vault, `Esc` closes), the audit view's operator
+column + server-side `?user=` filter (asserted on the outgoing request) and
+the webhook **test-delivery** button (honest failure toast + ledger badge).
+All seeds go through the real HTTP API — never test hooks.
+
+Note on the suite's growth (round 18): the full suite issues more requests
+than the old global rate limiter allowed (60/min per IP — BELOW the console's
+own polling baseline of ~25-30 req/min per open console). The limiter now
+sits at 240/min; the dedicated login limiter (10/min) is unchanged and
+remains the anti-bruteforce guard.
 
 ```bash
 cd tests/e2e && npm install && npx playwright install chromium   # once

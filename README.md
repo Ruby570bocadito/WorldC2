@@ -60,7 +60,11 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 | 🖥️ SIEM webhook health on the Dashboard | ✅ Working | Admins see a per-destination delivery panel (ok/failed counters, last attempt and status from the round-15 ledger) right on the Dashboard (round 17); other roles never hit the admin-gated endpoint |
 | 🏷️ Build identity | ✅ Working | `make build-server` injects version and commit via `-ldflags` (round 17); the identity shows up in `worldc2_build_info` and CI stamps it per build |
 | 🤖 CI with browser E2E | ✅ Working | `.github/workflows/ci.yml` runs the Go `-race` suite, the web build, cross-platform builds, Docker smoke, security gates **and the Playwright browser E2E against a real server** (round 17) under workflow-level least-privilege `permissions: contents: read` |
-| 🖱️ Browser E2E suite | ✅ Working | `tests/e2e/` (round 16): a Playwright suite that drives the real console — login, dashboard, sessions filters, vault create/search/CSV-export/two-step-delete and logout — runnable via `make test-e2e` against any running server (`E2E_BASE_URL`, `E2E_USER`, `E2E_PASS`); the auth-setup project persists the operator session to `.auth/operator.json` (gitignored). Round 17 adds audit-view, Files-export and webhook-panel specs (9 tests) |
+| 🖱️ Browser E2E suite | ✅ Working | `tests/e2e/` (round 16): a Playwright suite that drives the real console — login, dashboard, sessions filters, vault create/search/CSV-export/two-step-delete and logout — runnable via `make test-e2e` against any running server (`E2E_BASE_URL`, `E2E_USER`, `E2E_PASS`); the auth-setup project persists the operator session to `.auth/operator.json` (gitignored). Round 17 adds audit-view, Files-export and webhook-panel specs; round 18 adds command-palette, operator-attribution and webhook-test specs (**12 tests**) |
+| ⌨️ Command palette | ✅ Working | `Ctrl+K` / `Cmd+K` (round 18) opens a jump-to palette in the console: fuzzy filter across every view the current role may open (mirrors the route guards) plus quick actions — arrow keys navigate, `↵` opens, `Esc` closes; also clickable from the topbar hint |
+| 👤 Audit attribution by operator | ✅ Working | Every authenticated API call writes its **real operator id** to the trail (round 18 — previously the column stayed at 0 and the actor only lived in free text), so `GET /api/audit?user=NAME` answers "what did THIS account do" as a query; unknown users answer an empty array (no existence oracle) and the console Audit view gains an **Operator column** plus a server-side operator filter |
+| 🧹 Audit retention policy | ✅ Working | `audit.retention_days` (round 18) prunes trail rows older than the window at startup and hourly — the one, product-level delete path on the append-only log; `worldc2_audit_entries` / `worldc2_audit_pruned_total` gauges make growth and pruning observable; `0` (default) keeps the trail forever |
+| 📮 Webhook test delivery | ✅ Working | `POST /api/webhooks/test?id=` (admin, round 18) fires **one synthetic event synchronously** and answers `{"delivered": true|false}` honestly — a dead endpoint is a 200 with the transport error, not a disguised 500; the attempt folds into the same delivery ledger, and the console Webhooks view gains a send-to-test button per destination |
 
 > **Honesty policy:** this README only claims what the code does. Features that are planned or
 > experimental are marked as such — see the [CHANGELOG](CHANGELOG.md) for history.
@@ -86,13 +90,25 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 
 ---
 
+## 🎬 See it in action
+
+All three demos are captured from a real server with a real agent connected — no mocks.
+
+| Operator tour | Live command execution | Command palette (Ctrl+K) |
+|---------------|-------------------------|--------------------------|
+| ![Operator tour](docs/assets/demo.gif) | ![Live terminal](docs/assets/terminal.gif) | ![Command palette](docs/assets/palette.gif) |
+
+---
+
 ## 📸 Console
+
+Every screenshot is re-captured from a live server on each documentation round.
 
 | Login | Dashboard |
 |-------|-----------|
 | ![Login](docs/assets/login.png) | ![Dashboard](docs/assets/dashboard.png) |
 
-| Sessions | Command Runner |
+| Sessions (task history) | Command Runner |
 |----------|----------------|
 | ![Sessions](docs/assets/sessions.png) | ![Terminal](docs/assets/terminal.png) |
 
@@ -104,9 +120,13 @@ encrypted transports, session management, RBAC, audit logging and a real-time op
 |----------|------------------|
 | ![Profiles](docs/assets/profiles.png) | ![Webhooks](docs/assets/webhooks.png) |
 
-| Credential Vault |
-|------------------|
-| ![Vault](docs/assets/vault.png) |
+| Credential Vault | Audit log (operator attribution) |
+|------------------|-----------------------------------|
+| ![Vault](docs/assets/vault.png) | ![Audit](docs/assets/audit.png) |
+
+| Operators |
+|-----------|
+| ![Operators](docs/assets/operators.png) |
 
 ---
 

@@ -113,6 +113,11 @@ export const IconDownload = icon('Download', [
   p('M5 19.5h14'),
 ])
 
+export const IconSend = icon('Send', [
+  p('M20.5 3.5L10 14'),
+  p('M20.5 3.5L14 20.5l-4-6.5-6.5-4z'),
+])
+
 export const IconTrash = icon('Trash', [
   p('M5 7h14'),
   p('M9.5 7V5.5c0-.6.4-1 1-1h3c.6 0 1 .4 1 1V7'),

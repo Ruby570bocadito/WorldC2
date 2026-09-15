@@ -28,6 +28,11 @@ import (
 //     to 64 chars so a hostile query string cannot grow the SQL argument
 //     without bound (the value is only ever bound as a parameter; the cap
 //     keeps responses and logs tidy).
+//   - ?user=NAME    — exact operator filter (r18). Attributability is the
+//     point: since this same round every authenticated request writes its
+//     real operator_id, so "what did THIS account do" is a query, not a
+//     text search. Unknown usernames answer an empty array (no existence
+//     oracle), and the cap mirrors ?action=.
 func (r *Router) handleAudit(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		http.Error(w, `{"error":"method not allowed"}`, 405)
@@ -52,7 +57,13 @@ func (r *Router) handleAudit(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	entries, err := r.server.DB().ListAuditEntries(limit, action)
+	user := q.Get("user")
+	if len(user) > 64 {
+		http.Error(w, `{"error":"user filter must be 64 characters or fewer"}`, 400)
+		return
+	}
+
+	entries, err := r.server.DB().ListAuditEntries(limit, action, user)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return
@@ -63,10 +74,11 @@ func (r *Router) handleAudit(w http.ResponseWriter, req *http.Request) {
 	out := make([]AuditEntry, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, AuditEntry{
-			ID:      e.ID,
-			Action:  e.Action,
-			Detail:  e.Detail,
-			Created: e.Created,
+			ID:       e.ID,
+			Action:   e.Action,
+			Detail:   e.Detail,
+			Operator: e.Operator,
+			Created:  e.Created,
 		})
 	}
 
@@ -76,10 +88,12 @@ func (r *Router) handleAudit(w http.ResponseWriter, req *http.Request) {
 
 // AuditEntry is the JSON shape of one audit row. Field names are lowercase
 // to match the console-side conventions (files, notes, credentials); the
-// Created encoding matches time.Time's RFC3339 JSON output exactly.
+// Created encoding matches time.Time's RFC3339 JSON output exactly. Operator
+// is the attributed account ("" for system events — task lifecycle etc.).
 type AuditEntry struct {
-	ID      int       `json:"id"`
-	Action  string    `json:"action"`
-	Detail  string    `json:"detail"`
-	Created time.Time `json:"created"`
+	ID       int       `json:"id"`
+	Action   string    `json:"action"`
+	Detail   string    `json:"detail"`
+	Operator string    `json:"operator"`
+	Created  time.Time `json:"created"`
 }

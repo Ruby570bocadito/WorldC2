@@ -238,6 +238,55 @@ func (sf *SIEMForwarder) Stop() {
 	sf.wg.Wait()
 }
 
+// TestDelivery sends one synthetic event to the webhook with the given ID
+// SYNCHRONOUSLY and reports the outcome. It backs POST /api/webhooks/test:
+// before it, an operator configuring a destination had to wait for a real
+// session event (or fire a real task) to learn the URL was wrong — a test
+// button needs an immediate, honest answer.
+//
+// The attempt folds into the same per-destination ledger the automatic
+// path uses (recordResult), so the "Test" click shows up in the stats the
+// console already renders. The synthetic event carries no engagement
+// data — only the event type, the source and the destination ID.
+//
+// The event type "webhook_test" deliberately bypasses the destination's
+// Events subscription: the whole point is to prove reachability, and a
+// destination subscribed only to session_error would otherwise be
+// untestable. Automatic forwarding keeps honouring the subscription.
+//
+// Returns (found=false) when no webhook matches the ID — the handler maps
+// that to 404; delivery errors are the RESULT of the test, not a handler
+// failure, so they come back as (found, err) and land in the 200 body.
+func (sf *SIEMForwarder) TestDelivery(id string) (found bool, err error) {
+	sf.mu.Lock()
+	var wh *WebhookConfig
+	for i := range sf.webhooks {
+		if sf.webhooks[i].ID == id {
+			wh = &sf.webhooks[i]
+			break
+		}
+	}
+	if wh == nil {
+		sf.mu.Unlock()
+		return false, nil
+	}
+	cfg := *wh
+	sf.mu.Unlock()
+
+	event := SIEMEvent{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		EventType: "webhook_test",
+		Source:    "c2_server",
+		Data: map[string]interface{}{
+			"webhook_id": cfg.ID,
+			"note":       "manual test delivery from the WORLDC2 console",
+		},
+	}
+	err = sf.sendToWebhook(cfg, event)
+	sf.recordResult(cfg.ID, err)
+	return true, err
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {

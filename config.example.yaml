@@ -65,3 +65,12 @@ operators:
 #   level: "info"       # debug | info | warn | error | fatal (or WORLDC2_LOG_LEVEL env)
 #   output: "stdout"    # stdout | file
 #   file: "worldc2.log"
+
+# Audit-trail policy. The trail (audit_log) records every API call, auth
+# event and lifecycle action and is readable in the console (Audit log,
+# admin & auditor) and via GET /api/audit. Rows are append-only; the only
+# delete path is the retention pruner below.
+#
+# audit:
+#   retention_days: 30  # prune rows older than N days (startup + hourly);
+#                       # 0 (default) keeps the trail forever

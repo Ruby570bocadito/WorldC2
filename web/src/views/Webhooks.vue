@@ -112,7 +112,7 @@
             <th>Deliveries</th>
             <th>Timeout</th>
             <th>Created</th>
-            <th style="width: 90px">Actions</th>
+            <th style="width: 92px">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -139,15 +139,27 @@
             <td class="num">{{ wh.timeout_ms }}ms</td>
             <td class="num">{{ fmtDate(wh.created_at) }}</td>
             <td>
-              <button
-                class="icon-btn danger"
-                type="button"
-                :title="'Delete webhook ' + wh.url"
-                aria-label="Delete webhook"
-                @click="remove(wh)"
-              >
-                <IconTrash :size="15" />
-              </button>
+              <div class="row-actions">
+                <button
+                  class="icon-btn"
+                  type="button"
+                  :disabled="testing === wh.id"
+                  :title="'Send a test event to ' + wh.url"
+                  aria-label="Send test event"
+                  @click="testDelivery(wh)"
+                >
+                  <IconSend :size="15" />
+                </button>
+                <button
+                  class="icon-btn danger"
+                  type="button"
+                  :title="'Delete webhook ' + wh.url"
+                  aria-label="Delete webhook"
+                  @click="remove(wh)"
+                >
+                  <IconTrash :size="15" />
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -170,7 +182,7 @@
 import { api } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtDate } from '../utils/format.js'
-import { IconPlus, IconTrash, IconWebhook } from '../components/icons.js'
+import { IconPlus, IconTrash, IconWebhook, IconSend } from '../components/icons.js'
 
 // Must mirror the server-side allowlist (knownSIEMEvents in handlers.go).
 const EVENT_TYPES = [
@@ -186,7 +198,7 @@ const EVENT_TYPES = [
 
 export default {
   name: 'WebhooksView',
-  components: { IconPlus, IconTrash, IconWebhook },
+  components: { IconPlus, IconTrash, IconWebhook, IconSend },
   data() {
     return {
       webhooks: [],
@@ -196,6 +208,9 @@ export default {
       creating: false,
       loading: true,
       clientError: '',
+      // ID of the webhook whose test delivery is in flight (the test is
+      // synchronous server-side and waits up to the destination timeout).
+      testing: null,
     }
   },
   mounted() {
@@ -284,6 +299,29 @@ export default {
         if (!e.expired) notify.error('Delete failed: ' + e.message)
       }
     },
+    // POST /api/webhooks/test?id=... (r18): the server fires ONE synthetic
+    // event synchronously and answers { delivered, error? }. A failed
+    // delivery is still a SUCCESSFUL test — the outcome goes to the
+    // operator verbatim, not disguised as an HTTP error.
+    async testDelivery(wh) {
+      if (this.testing) return
+      this.testing = wh.id
+      try {
+        const res = await api.post('/api/webhooks/test?id=' + encodeURIComponent(wh.id), {})
+        if (res && res.delivered) {
+          notify.ok('Test delivered to ' + wh.url)
+        } else {
+          notify.error('Test failed: ' + ((res && res.error) || 'delivery refused'))
+        }
+      } catch (e) {
+        if (!e.expired) notify.error('Test request failed: ' + e.message)
+      } finally {
+        this.testing = null
+        // The attempt folded into the delivery ledger — refresh so the
+        // row's counters reflect the click immediately.
+        this.fetchWebhooks()
+      }
+    },
   },
 }
 </script>
@@ -347,6 +385,10 @@ export default {
   border-radius: 5px;
 }
 .fw { font-weight: 600; }
+.row-actions {
+  display: inline-flex;
+  gap: 6px;
+}
 .loading-row {
   display: flex;
   align-items: center;

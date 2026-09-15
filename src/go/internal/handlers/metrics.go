@@ -91,6 +91,15 @@ func (r *Router) handleMetrics(w http.ResponseWriter, req *http.Request) {
 	m.gauge("worldc2_webhooks_failed_total", failed,
 		"Failed webhook delivery attempts since process start (in-memory ledger).")
 
+	// Audit trail: total rows (growth watch) and the rows the retention
+	// pruner removed since start. Both counts only — no content.
+	if n, err := r.server.DB().CountAuditEntries(); err == nil {
+		m.gauge("worldc2_audit_entries", n,
+			"Rows currently in the append-only audit trail.")
+	}
+	m.gauge("worldc2_audit_pruned_total", r.server.AuditPrunedTotal(),
+		"Audit rows removed by the retention pruner since process start.")
+
 	// Go runtime: standard process_* style gauges under the worldc2_ prefix
 	// so no Prometheus client library dependency is introduced.
 	m.gauge("worldc2_go_goroutines", runtime.NumGoroutine(),

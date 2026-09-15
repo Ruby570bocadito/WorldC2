@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/auth"
@@ -90,6 +91,11 @@ type Server struct {
 
 	// startTime records when the server was created (for uptime reporting).
 	startTime time.Time
+
+	// auditPrunedTotal counts audit rows removed by the retention pruner
+	// since process start — exposed via worldc2_audit_pruned_total so the
+	// effect of the retention policy is observable from Prometheus.
+	auditPrunedTotal atomic.Int64
 }
 
 // SetAPIMux sets a custom API mux (used to avoid circular imports).
@@ -248,6 +254,16 @@ func New(cfg *config.Config, database *db.DB) *Server {
 
 // Start begins listening on all configured transports.
 func (s *Server) Start() error {
+	// Audit retention pruner (round 18): the audit trail used to grow
+	// without bound — every API call appends a row. When the operator
+	// configures audit.retention_days, rows older than that are pruned
+	// once at startup and then hourly. RetentionDays 0 (default) keeps
+	// the historical never-delete behaviour and this goroutine simply
+	// never runs.
+	if days := s.cfg.Audit.RetentionDays; days > 0 {
+		go s.auditRetentionLoop(days)
+	}
+
 	// Tunnel reaper: closes tunnels whose session died or that have been
 	// idle beyond tunnelIdleTimeout, so the tunnels map cannot grow
 	// without bound during long missions. Runs for the server lifetime.
@@ -539,6 +555,45 @@ func (s *Server) ListenerCount() int { return len(s.listeners) }
 
 // UptimeSeconds returns seconds elapsed since the server was created.
 func (s *Server) UptimeSeconds() int64 { return int64(time.Since(s.startTime).Seconds()) }
+
+// AuditPrunedTotal reports how many audit rows the retention pruner has
+// removed since process start (for worldc2_audit_pruned_total).
+func (s *Server) AuditPrunedTotal() int64 { return s.auditPrunedTotal.Load() }
+
+// auditRetentionLoop prunes the audit trail on the retention policy the
+// operator configured. Runs the first pass immediately (a restart applies
+// the policy to whatever a previous process left behind) and then hourly —
+// a daily-granularity policy does not need finer ticks, and one DELETE per
+// hour against an indexed timestamp column is noise. Exits when the server
+// shuts down.
+func (s *Server) auditRetentionLoop(days int) {
+	s.pruneAuditOnce(days)
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.pruneAuditOnce(days)
+		case <-s.quit:
+			return
+		}
+	}
+}
+
+// pruneAuditOnce performs one retention pass and accounts the result. A
+// failed pass logs and waits for the next tick — pruning is best-effort
+// housekeeping, never a reason to disturb the server.
+func (s *Server) pruneAuditOnce(days int) {
+	n, err := s.db.PruneAuditOlderThan(days)
+	if err != nil {
+		log.Printf("[AUDIT] retention pass failed (keeping rows): %v", err)
+		return
+	}
+	if n > 0 {
+		s.auditPrunedTotal.Add(n)
+		log.Printf("[AUDIT] retention: pruned %d audit rows older than %d days", n, days)
+	}
+}
 
 // ModuleStore returns the module store.
 func (s *Server) ModuleStore() *module.Store { return s.moduleStore }

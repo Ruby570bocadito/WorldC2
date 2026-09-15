@@ -17,7 +17,18 @@ type Config struct {
 	Database  DatabaseConfig   `yaml:"database"`
 	TLS       TLSConfig        `yaml:"tls"`
 	Logging   LoggingConfig    `yaml:"logging"`
+	Audit     AuditConfig      `yaml:"audit"`
 	Operators []OperatorConfig `yaml:"operators"`
+}
+
+// AuditConfig holds audit-trail policy. The trail is append-only; the only
+// delete path is the retention pruner, and RetentionDays is the switch.
+type AuditConfig struct {
+	// RetentionDays bounds how long an audit row lives: rows older than
+	// this are pruned at startup and then hourly. 0 (default) keeps the
+	// trail forever — the historical behaviour — so an operator must
+	// explicitly opt in to pruning. 1..3650 are accepted as-is.
+	RetentionDays int `yaml:"retention_days"`
 }
 
 // TransportConfig holds multi-transport listener configuration.

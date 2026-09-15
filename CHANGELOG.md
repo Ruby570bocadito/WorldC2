@@ -1,5 +1,107 @@
 # WorldC2 — Changelog
 
+## v1.19.0 — Round 18: full gallery refresh (GIFs + screenshots), command palette, audit operator attribution & retention, webhook test delivery (2026-09-15)
+
+Eighteenth round, under the operator's explicit directive: **update the README
+images and GIFs, and keep the rounds going**. The documentation surface got the
+biggest refresh of the whole series — every console screenshot re-captured from
+a live server with a REAL local agent connected (real tasks, real outputs) and
+the demo GIF replaced by **three** purpose-built GIFs — while Implementaciones
+delivers four features and Bugs closes two real findings the E2E growth
+uncovered.
+
+### Added (Implementaciones)
+
+- **Command palette (`Ctrl+K` / `Cmd+K`)** — a jump-to dialog in the console:
+  fuzzy filter across every view the current role may open (mirroring the
+  route guards — server-side authorization stays the real gate) plus a Logout
+  action. Arrow keys navigate, `↵` runs, `Esc` closes, hover syncs the active
+  row; a topbar `Jump to… Ctrl K` chip makes the shortcut discoverable (and
+  mouse-reachable). No new dependencies; the dialog follows the shared dark
+  design system.
+- **Audit operator attribution + `?user=` filter** — the `audit_log.operator_id`
+  column existed since migration 1 but EVERY writer passed 0: the actor only
+  lived inside the free-text `detail`. The auth middleware now resolves the
+  caller's numeric id (the same lookup the existence check already paid) and
+  publishes it as `X-Auth-UID`; the audit middleware writes it, login writes
+  `auth_success` with the real id, and `GET /api/audit` gains `?user=NAME`
+  (exact, ≤ 64 chars, bound as a parameter; unknown users → empty array — no
+  existence oracle). Entries now carry `operator` (resolved via LEFT JOIN,
+  empty for system events). The console Audit view shows an **Operator
+  column** (pill for attributed rows, muted "system" marker otherwise) and a
+  server-side operator filter select.
+- **Audit retention policy** — `audit.retention_days` (0 = keep forever, the
+  historical default): rows older than the window are pruned once at startup
+  and then hourly by a server goroutine; the pass is accounted in
+  `worldc2_audit_pruned_total` and trail size is observable via
+  `worldc2_audit_entries` (both gauges on `/api/metrics`). This is the one,
+  product-level delete path on the append-only trail — documented as policy,
+  not as a per-request mutation.
+- **Webhook test delivery** — `POST /api/webhooks/test?id=` (admin) fires ONE
+  synthetic event (event type `webhook_test`, carrying only the destination
+  id and a constant note — no engagement data) SYNCHRONOUSLY, bounded by the
+  destination's own timeout, and answers `{"delivered": true}` or 200
+  `{"delivered": false, "error": "..."}` with the transport error capped at
+  200 chars. The attempt folds into the same per-destination ledger the
+  automatic path keeps; the console Webhooks view gains a send-to-test button
+  (per-row spinner while in flight) and the E2E exercises the honest-failure
+  path end to end.
+
+### Documentation round (Pulimiento)
+
+- **README**: new **"See it in action"** section with three GIFs — `demo.gif`
+  (operator tour: login → dashboard → sessions → files → vault → webhooks →
+  audit), `terminal.gif` (live command execution against a real local agent:
+  `whoami`, `uname -a`, `os-release`) and `palette.gif` (Ctrl+K jump to the
+  Audit log) — all assembled from Playwright-captured frames with ffmpeg
+  two-pass palettes. **Every** gallery screenshot re-captured at 1440×900
+  from the live server: the Sessions shot shows the expanded detail panel
+  with REAL task history and outputs, the Audit shot shows the new Operator
+  column with the admin filter active, Webhooks shows the test button with
+  the delivery ledger, and `operators.png` joins the gallery.
+- `api/openapi.yaml`: `/api/webhooks/test` path documented in full;
+  `?user=` + the `operator` field on `/api/audit` (**28 paths**, parseable).
+- `docs/DEVELOPER_GUIDE.md`: audit row rewritten (attribution + retention),
+  new `/api/webhooks/test` row, E2E section extended with the round-18 specs
+  and the rate-limiter note.
+- `config.example.yaml`: documented `audit:` block (`retention_days`).
+- `Makefile`: `VERSION ?= v1.19.0` (injected into `worldc2_build_info`).
+
+### Fixed (Bugs/Seguridad)
+
+- **Global rate limiter below the console's own baseline** — 60 req/min per
+  IP was LESS than the console generates by itself (health poll every 5s +
+  Dashboard cycle + Audit refresh ≈ 25-30 req/min per open console): two
+  operators behind one NAT/VPN IP would trip 429s during normal browsing,
+  and the grown E2E suite hit the same wall (12 specs > 60 requests/minute).
+  Raised to 240/min; the dedicated login limiter (10/min) is unchanged and
+  remains the anti-bruteforce control.
+- **Spoofable identity headers on unauthenticated routes** — `X-Auth-User` /
+  `X-Auth-Role` are server-SET outputs of the auth middleware, but routes
+  audited WITHOUT auth (login, health, refresh) would fold a client-sent
+  `X-Auth-User: admin` into the trail's `by admin` detail — forged
+  attribution on the log whose job is forensics. The CORS wrapper (outermost
+  on every route) now strips `X-Auth-*` before anything reads them; pinned
+  by `TestAuditHeaderSpoofIgnored`.
+
+### Verified
+
+- `go build ./...`, `go vet ./...`, `gofmt -l` clean.
+- `go test -race ./...`: 11 packages with tests, all green — including the
+  round-18 additions (`TestAuditOperatorAttribution`, `TestAuditRetentionPrune`,
+  `TestAuditUserFilter`, `TestAuditHeaderSpoofIgnored`,
+  `TestWebhookTestDelivery`, `TestMetricsAuditGauges`).
+- `npm run build` clean (bundle 193.3 kB / 63.2 kB gzip).
+- `yaml.safe_load` green: `api/openapi.yaml` (28 paths),
+  `.github/workflows/ci.yml` (6 jobs), `config.example.yaml`.
+- Browser E2E: **12/12 specs** against a real rebuilt binary with a real
+  local agent connected.
+- Live smoke on the rebuilt binary: attribution of authenticated calls,
+  `?user=` semantics, retention prune, webhook test against live and dead
+  sinks, spoofed-header strip, new metrics gauges.
+- GIFs: `demo.gif` 324 KB / `terminal.gif` 84 KB / `palette.gif` 184 KB,
+  all looping, palette-optimized.
+
 ## v1.18.0 — Round 17: audit trail read API + viewer, task-history pagination, Files export & ConfirmModal, webhook health on the Dashboard, build identity, CI browser E2E (2026-09-15)
 
 Seventeenth round, again under the "más profundas, intensas y largas"

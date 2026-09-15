@@ -70,7 +70,11 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.server.DB().LogAction(0, "auth_success", operator.Username+" logged in")
+	// Attribute the login to the exact account (operator.ID, r18) —
+	// auth_success rows are the anchor of the ?user= timeline: from
+	// this row on, every api_call of the session is attributable via
+	// X-Auth-UID instead of only inside the detail text.
+	r.server.DB().LogAction(operator.ID, "auth_success", operator.Username+" logged in")
 
 	r.server.SIEM().Forward(siem.SIEMEvent{
 		EventType: "operator_login",
@@ -1272,6 +1276,54 @@ func (r *Router) handleWebhooks(w http.ResponseWriter, req *http.Request) {
 		}
 		json.NewEncoder(w).Encode(views)
 	}
+}
+
+// handleWebhookTest fires ONE synthetic event at the destination identified
+// by ?id= and reports the outcome immediately — POST /api/webhooks/test
+// (r18). Before it, an operator learned a destination was misconfigured the
+// hard way: a real event hit a dead URL and the failure only surfaced in
+// the ledger afterwards.
+//
+// The delivery RESULT is the payload, not the HTTP status: a destination
+// that refuses the connection answers 200 {"delivered":false,"error":...}
+// because the test itself worked — the endpoint's job is to report the
+// truth, not to disguise a dead endpoint as a 500. Only unknown IDs (404)
+// and non-POST methods (405) are protocol errors. The attempt is folded
+// into the same ledger the automatic path keeps, so the console's stats
+// reflect it on the next fetch.
+//
+// Security posture: admin gate (same as webhook CRUD — the test exercises
+// the very URLs the CRUD created), and the synthetic event carries no
+// engagement data (no hostnames, no usernames — only the destination ID
+// and a constant note).
+func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, 405)
+		return
+	}
+	id := req.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, `{"error":"missing webhook id (?id=...)"}`, 400)
+		return
+	}
+	found, err := r.server.SIEM().TestDelivery(id)
+	if !found {
+		http.Error(w, `{"error":"webhook not found"}`, 404)
+		return
+	}
+	resp := map[string]interface{}{"delivered": err == nil}
+	if err != nil {
+		// Cap the transport error the same way the ledger does —
+		// a hostile endpoint could answer with megabytes of body
+		// and the operator-facing text must stay bounded.
+		msg := err.Error()
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		resp["error"] = msg
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // newWebhookID mints a random identifier for a webhook destination

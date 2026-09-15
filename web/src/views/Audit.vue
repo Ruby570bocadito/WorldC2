@@ -30,6 +30,16 @@
         <option value="all">All actions</option>
         <option v-for="a in actions" :key="a" :value="a">{{ a }}</option>
       </select>
+      <select
+        v-model="userFilter"
+        class="select filter-select"
+        aria-label="Operator filter"
+        title="Server-side filter: only events attributed to this account"
+        @change="fetchEntries"
+      >
+        <option value="">All operators</option>
+        <option v-for="u in operators" :key="u" :value="u">{{ u }}</option>
+      </select>
       <select v-model="limitFilter" class="select filter-select" aria-label="Page size" title="How many recent events to load (server caps at 500)">
         <option value="100">Last 100</option>
         <option value="250">Last 250</option>
@@ -48,6 +58,7 @@
           <tr>
             <th style="width: 160px">Time</th>
             <th style="width: 130px">Action</th>
+            <th style="width: 120px">Operator</th>
             <th>Detail</th>
           </tr>
         </thead>
@@ -56,6 +67,10 @@
             <td class="num mono small">{{ fmtDate(e.created) }}</td>
             <td>
               <span class="action-pill mono" :class="actionClass(e.action)">{{ e.action }}</span>
+            </td>
+            <td class="small">
+              <span v-if="e.operator" class="op-pill mono">{{ e.operator }}</span>
+              <span v-else class="muted small">system</span>
             </td>
             <td class="detail-cell small">{{ e.detail || '—' }}</td>
           </tr>
@@ -96,6 +111,10 @@ export default {
       hasError: false,
       query: '',
       actionFilter: 'all',
+      // Operator filter is SERVER-side (?user=): it walks the whole trail
+      // of one account, not just the loaded page — attribution is the
+      // point of the column.
+      userFilter: '',
       // Server contract: 1..500. The select only offers the sane sizes.
       limitFilter: '500',
       timer: null,
@@ -104,6 +123,12 @@ export default {
   computed: {
     actions() {
       return [...new Set(this.entries.map((e) => e.action).filter(Boolean))].sort()
+    },
+    // Account select built from what the loaded page actually carries —
+    // the audit API deliberately has no "list of all usernames" shape;
+    // this keeps the select honest without widening the endpoint.
+    operators() {
+      return [...new Set(this.entries.map((e) => e.operator).filter(Boolean))].sort()
     },
     filtered() {
       const q = this.query.trim().toLowerCase()
@@ -133,9 +158,11 @@ export default {
     },
     async fetchEntries() {
       // limit comes from the select; the API rejects anything outside
-      // 1..500, so keep the select the single source of truth.
+      // 1..500, so keep the select the single source of truth. The user
+      // filter rides along server-side (?user=) when set.
       const limit = parseInt(this.limitFilter, 10)
-      const path = '/api/audit?limit=' + (limit > 0 && limit <= 500 ? limit : 500)
+      let path = '/api/audit?limit=' + (limit > 0 && limit <= 500 ? limit : 500)
+      if (this.userFilter) path += '&user=' + encodeURIComponent(this.userFilter)
       try {
         const data = await api.get(path)
         this.entries = Array.isArray(data) ? data : []
@@ -179,6 +206,19 @@ export default {
 .action-pill.is-warn {
   color: var(--warning, #e5b348);
   border-color: rgba(229, 179, 72, 0.4);
+}
+.op-pill {
+  display: inline-block;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(110, 123, 242, 0.35);
+  background: var(--accent-soft);
+  color: var(--accent);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .detail-cell {
   color: var(--muted);

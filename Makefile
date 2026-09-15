@@ -7,7 +7,7 @@ all: build
 # Build identity injected into the server binary and reported by the
 # worldc2_build_info metric (round 17). VERSION can be overridden:
 #   make build-server VERSION=v2.0.0
-VERSION ?= v1.18.0
+VERSION ?= v1.19.0
 COMMIT  ?= unknown
 
 ## build: compile server and agent into dist/
@@ -16,8 +16,8 @@ build: build-server build-agent
 build-server:
 	@echo "Building C2 server $(VERSION) ($(COMMIT))..."
 	cd src/go && CGO_ENABLED=0 go build -trimpath \
-	        -ldflags="-s -w -X github.com/Ruby570bocadito/WorldC2/src/go/internal/version.Version=$(VERSION) -X github.com/Ruby570bocadito/WorldC2/src/go/internal/version.Commit=$(COMMIT)" \
-	        -o ../../dist/worldc2-server ./cmd/server
+		-ldflags="-s -w -X github.com/Ruby570bocadito/WorldC2/src/go/internal/version.Version=$(VERSION) -X github.com/Ruby570bocadito/WorldC2/src/go/internal/version.Commit=$(COMMIT)" \
+		-o ../../dist/worldc2-server ./cmd/server
 
 build-agent:
 	@echo "Building agent..."
@@ -27,10 +27,10 @@ build-agent:
 build-agent-all:
 	@echo "Building agents for all platforms..."
 	cd src/go && \
-	        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-linux ./cmd/agent && \
-	        CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-windows.exe ./cmd/agent && \
-	        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-amd64 ./cmd/agent && \
-	        CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-arm64 ./cmd/agent
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-linux ./cmd/agent && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-windows.exe ./cmd/agent && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-amd64 ./cmd/agent && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ../../dist/worldc2-agent-darwin-arm64 ./cmd/agent
 
 ## web: build the Vue dashboard into web/dist/
 web:
@@ -50,9 +50,9 @@ test:
 ## test-e2e: run the Playwright console suite against a running server (E2E_BASE_URL, E2E_USER, E2E_PASS)
 test-e2e:
 	cd tests/e2e && npm install && \
-	        WORLDC2_BASE_URL=$${E2E_BASE_URL:-http://127.0.0.1:19090} \
-	        WORLDC2_USER=$${E2E_USER:-admin} WORLDC2_PASS=$${E2E_PASS:-admin} \
-	        npx playwright test
+		WORLDC2_BASE_URL=$${E2E_BASE_URL:-http://127.0.0.1:19090} \
+		WORLDC2_USER=$${E2E_USER:-admin} WORLDC2_PASS=$${E2E_PASS:-admin} \
+		npx playwright test
 
 test-coverage:
 	cd src/go && go test ./... -coverprofile=coverage.out

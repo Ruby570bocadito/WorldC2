@@ -932,6 +932,19 @@ paths:
           schema:
             type: string
             maxLength: 64
+        - name: user
+          in: query
+          required: false
+          description: >-
+            Exact operator filter (round 18). Rows attributed to the given
+            account only — system events (operator_id 0) are excluded under
+            this filter, which is the honest semantics of "what did THIS
+            account do". Attributability requires the round-18 middleware:
+            authenticated calls write their real operator id; unknown
+            usernames return an empty array, never an error.
+          schema:
+            type: string
+            maxLength: 64
       responses:
         '200':
           description: Array of audit entries (empty array, not null, when nothing matches)
@@ -948,11 +961,16 @@ paths:
                       type: string
                     detail:
                       type: string
+                    operator:
+                      type: string
+                      description: >-
+                        Attributed account (round 18) — empty for system events
+                        such as task/session lifecycle written with operator_id 0.
                     created:
                       type: string
                       format: date-time
         '400':
-          description: Invalid limit or over-long action filter
+          description: Invalid limit or over-long action/user filter
         '401':
           description: Missing or invalid token
         '403':
@@ -1201,6 +1219,52 @@ paths:
           description: Missing id query parameter
         '404':
           description: Unknown webhook id
+
+  /api/webhooks/test:
+    post:
+      summary: Fire one synthetic test event at a destination (admin only, round 18)
+      description: >-
+        Sends a single synthetic event (event_type "webhook_test", carrying
+        only the destination ID and a constant note — no engagement data)
+        to the webhook SYNCHRONOUSLY, bounded by the destination's own
+        timeout, and folds the attempt into the same per-destination
+        delivery ledger the automatic path keeps. The delivery RESULT is
+        the payload: a destination that refuses the connection answers 200
+        with delivered=false and the transport error (capped at 200 chars)
+        — the test itself worked. Only unknown IDs and non-POST methods are
+        protocol errors. The synthetic event deliberately bypasses the
+        destination's event-type subscription: reachability is the point.
+      tags: [Webhooks]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Webhook ID returned by POST /api/webhooks
+      responses:
+        '200':
+          description: Outcome of the test (delivered true or false with a bounded error)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivered:
+                    type: boolean
+                  error:
+                    type: string
+                    description: Transport or HTTP error text (max 200 chars) when delivered is false
+        '400':
+          description: Missing id query parameter
+        '403':
+          description: Admin role required
+        '404':
+          description: Unknown webhook id
+        '405':
+          description: Only POST is supported
 
   /api/mtls/cert:
     post:

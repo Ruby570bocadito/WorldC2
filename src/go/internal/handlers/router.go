@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,7 +30,15 @@ type Router struct {
 // allowedOrigins is the CORS allowlist; a "*" entry panics — wildcard CORS
 // would let any web page read the C2 API from a victim's browser.
 func NewRouter(server *c2.Server, trustedProxies []string, allowedOrigins []string) *Router {
-	rateLimiter := c2.NewRateLimiter(60, time.Minute)
+	// 240/min (4 req/s sustained) per client IP. The old ceiling of 60 was
+	// below the console's own baseline: App polls /api/health every 5s, the
+	// Dashboard another 5s cycle and the Audit view a 10s one — ~25-30
+	// req/min PER OPEN CONSOLE. Two operators behind one NAT/VPN IP tripped
+	// the limiter during normal browsing (and the grown E2E suite hit the
+	// same wall, which is what uncovered the arithmetic). Bruteforce is
+	// still handled by the dedicated login limiter (10/min on /api/login);
+	// this global bucket only stops floods.
+	rateLimiter := c2.NewRateLimiter(240, time.Minute)
 	if err := rateLimiter.SetTrustedProxies(trustedProxies); err != nil {
 		// NewRouter cannot return an error without breaking the wiring, but
 		// a misconfigured proxy list would silently key the bucket on a
@@ -149,6 +158,12 @@ func (r *Router) Setup() *http.ServeMux {
 
 	// SIEM webhooks (admin only)
 	mux.HandleFunc("/api/webhooks", cors(auth(admin(audit(rate(r.handleWebhooks))))))
+	// Test delivery for one destination (r18): fires a synthetic event
+	// synchronously and folds the attempt into the same per-destination
+	// ledger the automatic path keeps. Admin — the same gate as webhook
+	// CRUD: destination URLs are the sensitive part and the test is the
+	// one that exercises them.
+	mux.HandleFunc("/api/webhooks/test", cors(auth(admin(audit(rate(r.handleWebhookTest))))))
 
 	// mTLS certificate generation (admin only)
 	mux.HandleFunc("/api/mtls/cert", cors(auth(admin(audit(rate(r.handleMTLSCert))))))
@@ -168,6 +183,18 @@ func (r *Router) corsMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("X-XSS-Protection", "0")
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'")
+
+			// Strip client-supplied identity headers (r18, z_bugs fix):
+			// X-Auth-* are SERVER-SET by the auth middleware — they are the
+			// middleware's output channel, not an input. Unauthenticated
+			// routes (login, health, refresh) run audit WITHOUT auth, so a
+			// client-sent X-Auth-User: admin would land in the audit trail
+			// as "by admin" — forged attribution on the very log whose job
+			// is forensics. CORS is the outermost wrapper on every route,
+			// so the wipe runs before anything reads these headers.
+			req.Header.Del("X-Auth-User")
+			req.Header.Del("X-Auth-Role")
+			req.Header.Del("X-Auth-UID")
 
 			origin := req.Header.Get("Origin")
 			if origin != "" && r.allowedOrigins[origin] {
@@ -224,8 +251,12 @@ func (r *Router) authMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 			// loses entries on restart while the signing key (and
 			// thus old tokens' validity) does not — checking the
 			// operators table per request closes that window for
-			// good. Tiny table, one indexed lookup.
-			if exists, err := r.server.DB().OperatorExists(username); err != nil || !exists {
+			// good. Tiny table, one indexed lookup. The same
+			// query resolves the numeric ID the audit middleware
+			// attributes the call with (X-Auth-UID) — one lookup,
+			// two answers.
+			uid, uerr := r.server.DB().OperatorIDByUsername(username)
+			if uerr != nil || uid == 0 {
 				r.server.DB().LogAction(0, "auth_failed", r.rateLimiter.ResolveClientIP(req))
 				http.Error(w, `{"error":"operator no longer exists"}`, 401)
 				return
@@ -233,6 +264,7 @@ func (r *Router) authMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 
 			req.Header.Set("X-Auth-User", username)
 			req.Header.Set("X-Auth-Role", role)
+			req.Header.Set("X-Auth-UID", strconv.Itoa(uid))
 			next(w, req)
 		}
 	}
@@ -271,7 +303,20 @@ func (r *Router) auditMiddleware() func(http.HandlerFunc) http.HandlerFunc {
 			if user == "" {
 				user = "anonymous"
 			}
-			r.server.DB().LogAction(0, "api_call", req.Method+" "+req.URL.Path+" from "+ip+" by "+user)
+			// Attribute the call to the exact operator account:
+			// since the auth middleware resolves X-Auth-UID,
+			// "who did this" lives in a queryable column
+			// (audit_log.operator_id) instead of only inside the
+			// free-text detail — that is what makes the r18
+			// ?user= filter meaningful. System/anonymous calls
+			// keep 0.
+			uid := 0
+			if raw := req.Header.Get("X-Auth-UID"); raw != "" {
+				if n, nerr := strconv.Atoi(raw); nerr == nil && n > 0 {
+					uid = n
+				}
+			}
+			r.server.DB().LogAction(uid, "api_call", req.Method+" "+req.URL.Path+" from "+ip+" by "+user)
 			next(w, req)
 		}
 	}

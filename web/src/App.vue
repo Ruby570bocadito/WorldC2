@@ -52,6 +52,17 @@
               <IconMenu :size="18" />
             </button>
             <span class="crumb">{{ pageTitle }}</span>
+            <button
+              class="palette-hint"
+              type="button"
+              title="Jump to any view (Ctrl+K)"
+              aria-label="Open command palette"
+              @click="openPalette"
+            >
+              <IconSearch :size="13" />
+              <span>Jump to…</span>
+              <kbd>Ctrl K</kbd>
+            </button>
           </div>
 
           <div class="server-state" :class="online ? 'is-online' : 'is-down'" :title="stateTitle">
@@ -73,6 +84,48 @@
     <template v-else>
       <router-view />
     </template>
+
+    <!-- command palette (Ctrl+K, r18): keyboard jump-to for every view the
+         current role may open plus quick actions. Server-side guards stay
+         authoritative — the palette only hides what the route table would
+         refuse anyway. -->
+    <div v-if="paletteOpen" class="palette-overlay" @click.self="closePalette">
+      <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+        <input
+          ref="paletteInput"
+          v-model="paletteQuery"
+          class="palette-input"
+          type="text"
+          placeholder="Jump to a view or action…"
+          spellcheck="false"
+          autocomplete="off"
+          @keydown.esc.prevent="closePalette"
+          @keydown.down.prevent="paletteMove(1)"
+          @keydown.up.prevent="paletteMove(-1)"
+          @keydown.enter.prevent="paletteRun()"
+        />
+        <ul v-if="paletteItems.length" class="palette-list">
+          <li
+            v-for="(item, i) in paletteItems"
+            :key="item.id"
+            class="palette-item"
+            :class="{ 'is-active': i === paletteIndex }"
+            @mousemove="paletteIndex = i"
+            @click="paletteRun(item)"
+          >
+            <component :is="item.icon" :size="15" class="palette-icon" />
+            <span class="palette-label">{{ item.label }}</span>
+            <span class="palette-kind">{{ item.kind }}</span>
+          </li>
+        </ul>
+        <p v-else class="palette-empty">No matches — Esc to close</p>
+        <div class="palette-foot">
+          <span><kbd>↑↓</kbd> navigate</span>
+          <span><kbd>↵</kbd> open</span>
+          <span><kbd>esc</kbd> close</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -91,6 +144,7 @@ import {
   IconKey,
   IconLogout,
   IconMenu,
+  IconSearch,
 } from './components/icons.js'
 import { api } from './utils/api.js'
 
@@ -123,6 +177,7 @@ export default {
     IconKey,
     IconLogout,
     IconMenu,
+    IconSearch,
   },
   data() {
     return {
@@ -132,6 +187,10 @@ export default {
       online: true,
       health: { active_sessions: 0, listeners: 0 },
       timer: null,
+      // Command palette (r18): open state, query text and active row.
+      paletteOpen: false,
+      paletteQuery: '',
+      paletteIndex: 0,
     }
   },
   computed: {
@@ -150,6 +209,25 @@ export default {
     stateTitle() {
       if (!this.online) return 'Last health check failed'
       return 'Active sessions: ' + this.health.active_sessions
+    },
+    // Palette entries: every view the current ROLE may open (mirroring the
+    // route table's requiresAdmin / roles metadata — the server-side guards
+    // stay the real gate) plus the logout action. Substring filter on the
+    // query, case-insensitive.
+    paletteItems() {
+      const role = this.role
+      const views = NAV.filter((item) => {
+        if (item.to === '/webhooks' || item.to === '/operators') return role === 'admin'
+        if (item.to === '/audit') return role === 'admin' || role === 'auditor'
+        return true
+      }).map((item) => ({ id: 'go:' + item.to, label: item.label, kind: 'view', icon: item.icon, to: item.to }))
+      const actions = [
+        { id: 'act:logout', label: 'Logout', kind: 'action', icon: IconLogout, run: 'logout' },
+      ]
+      const all = views.concat(actions)
+      const q = this.paletteQuery.trim().toLowerCase()
+      if (!q) return all
+      return all.filter((item) => item.label.toLowerCase().includes(q))
     },
   },
   watch: {
@@ -171,9 +249,11 @@ export default {
       this.fetchHealth()
       this.startPolling()
     }
+    window.addEventListener('keydown', this.onGlobalKeydown)
   },
   beforeUnmount() {
     this.stopPolling()
+    window.removeEventListener('keydown', this.onGlobalKeydown)
   },
   methods: {
     isActive(item) {
@@ -200,6 +280,43 @@ export default {
     },
     closeSidebar() {
       this.sidebarOpen = false
+    },
+    // Global shortcut: Ctrl+K / Cmd+K toggles the palette. Guarded by
+    // authed — the palette is meaningless on the login screen (and the
+    // shortcut would fight the login form's own focus handling).
+    onGlobalKeydown(e) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        if (!this.authed) return
+        this.paletteOpen ? this.closePalette() : this.openPalette()
+      }
+    },
+    openPalette() {
+      this.paletteQuery = ''
+      this.paletteIndex = 0
+      this.paletteOpen = true
+      // Focus after the dialog renders (v-if is async on paint).
+      this.$nextTick(() => {
+        if (this.$refs.paletteInput) this.$refs.paletteInput.focus()
+      })
+    },
+    closePalette() {
+      this.paletteOpen = false
+    },
+    paletteMove(dir) {
+      const n = this.paletteItems.length
+      if (!n) return
+      this.paletteIndex = (this.paletteIndex + dir + n) % n
+    },
+    paletteRun(item) {
+      const entry = item || this.paletteItems[this.paletteIndex]
+      if (!entry) return
+      this.closePalette()
+      if (entry.run === 'logout') {
+        this.logout()
+        return
+      }
+      if (entry.to && this.$route.path !== entry.to) this.$router.push(entry.to)
     },
     logout() {
       ;['bty_token', 'bty_refresh', 'bty_expires', 'bty_user', 'bty_role'].forEach((k) =>
@@ -376,6 +493,118 @@ export default {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* topbar palette hint — makes the shortcut discoverable (and clickable) */
+.palette-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 14px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--speed), border-color var(--speed);
+}
+.palette-hint:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.palette-hint kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+/* ---------- command palette ---------- */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+}
+.palette {
+  width: 100%;
+  max-width: 480px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 10px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.palette-input {
+  width: 100%;
+  height: 46px;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+}
+.palette-input::placeholder { color: var(--faint); }
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--muted);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.palette-item.is-active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.palette-item.is-active .palette-icon { color: var(--accent); }
+.palette-label { flex: 1; }
+.palette-kind {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.palette-empty {
+  margin: 0;
+  padding: 18px 16px;
+  color: var(--faint);
+  font-size: 13px;
+}
+.palette-foot {
+  display: flex;
+  gap: 16px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--faint);
+  font-size: 11px;
+}
+.palette-foot kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .server-state {
