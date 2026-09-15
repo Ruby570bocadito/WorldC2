@@ -7,7 +7,7 @@ all: build
 # Build identity injected into the server binary and reported by the
 # worldc2_build_info metric (round 17). VERSION can be overridden:
 #   make build-server VERSION=v2.0.0
-VERSION ?= v1.19.0
+VERSION ?= v1.20.0
 COMMIT  ?= unknown
 
 ## build: compile server and agent into dist/

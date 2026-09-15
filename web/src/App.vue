@@ -23,13 +23,13 @@
         </nav>
 
         <div class="sidebar-foot">
-          <div class="op-chip">
+          <button class="op-chip op-chip-btn" type="button" title="Account security" @click="openAccount">
             <span class="op-avatar">{{ initial }}</span>
             <span class="op-meta">
               <span class="op-name">{{ user || 'operator' }}</span>
-              <span class="op-role">{{ role }}</span>
+              <span class="op-role">{{ role }}<span v-if="mfaEnabled" class="mfa-dot" title="TOTP MFA enabled"> · MFA</span></span>
             </span>
-          </div>
+          </button>
           <button class="btn btn-ghost btn-sm logout" type="button" @click="logout">
             <IconLogout :size="15" />
             <span>Logout</span>
@@ -68,6 +68,9 @@
           <div class="server-state" :class="online ? 'is-online' : 'is-down'" :title="stateTitle">
             <span class="state-dot" />
             <span class="state-label">{{ online ? 'Server online' : 'Server unreachable' }}</span>
+            <span v-if="online && version" class="state-version mono" :title="'Commit ' + (version.commit || 'unknown')">
+              {{ version.version }}
+            </span>
             <span v-if="online" class="state-meta mono">
               {{ health.active_sessions }} sess · {{ health.listeners }} listeners
             </span>
@@ -123,6 +126,110 @@
           <span><kbd>↑↓</kbd> navigate</span>
           <span><kbd>↵</kbd> open</span>
           <span><kbd>esc</kbd> close</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account security (r19): self-service password change + TOTP MFA
+         enrollment for the CURRENT operator. Every action re-resolves the
+         identity server-side from the auth headers. -->
+    <div v-if="accountOpen" class="acct-overlay" @click.self="closeAccount">
+      <div class="acct" role="dialog" aria-modal="true" aria-label="Account security">
+        <div class="acct-head">
+          <span class="acct-title">Account security</span>
+          <button class="icon-btn" type="button" aria-label="Close" @click="closeAccount">
+            <IconLogout :size="15" style="transform: rotate(90deg)" />
+          </button>
+        </div>
+
+        <p v-if="acctNotice" class="acct-notice" role="status">{{ acctNotice }}</p>
+        <p v-if="acctError" class="acct-error" role="alert">{{ acctError }}</p>
+
+        <!-- password change -->
+        <form class="acct-section" @submit.prevent="changePassword">
+          <span class="acct-label">Change passphrase</span>
+          <input
+            v-model="pwForm.current"
+            class="input mono"
+            type="password"
+            placeholder="Current passphrase"
+            autocomplete="current-password"
+            required
+          />
+          <input
+            v-model="pwForm.next"
+            class="input mono"
+            type="password"
+            placeholder="New passphrase (min 10 chars)"
+            autocomplete="new-password"
+            minlength="10"
+            required
+          />
+          <input
+            v-model="pwForm.confirm"
+            class="input mono"
+            type="password"
+            placeholder="Repeat new passphrase"
+            autocomplete="new-password"
+            required
+          />
+          <button class="btn btn-primary" type="submit" :disabled="acctBusy">
+            {{ acctBusy ? 'Working…' : 'Change passphrase' }}
+          </button>
+          <span class="acct-hint">Every session (including this one) is signed out after a change.</span>
+        </form>
+
+        <!-- TOTP MFA -->
+        <div class="acct-section">
+          <span class="acct-label">
+            Two-factor authentication
+            <span v-if="totp.enabled" class="badge badge-ok"><span class="dot dot-ok" /> enabled</span>
+            <span v-else-if="totp.pending" class="badge">pending setup</span>
+            <span v-else class="badge">disabled</span>
+          </span>
+
+          <template v-if="!totp.enabled && !totp.pending">
+            <button class="btn btn-ghost" type="button" :disabled="acctBusy" @click="totpSetup">
+              Set up authenticator app
+            </button>
+            <span class="acct-hint">Generates a secret your authenticator app (Aegis, Google Authenticator, 1Password…) stores as a 6-digit rolling code.</span>
+          </template>
+
+          <template v-if="totp.pending">
+            <div class="totp-secret mono" :title="'Copy: ' + totp.secret" @click="copySecret">
+              {{ totp.secret }}
+            </div>
+            <a class="totp-uri mono" :href="totp.uri" @click.prevent="copySecret">{{ totp.uri }}</a>
+            <span class="acct-hint">Add the secret to your app, then confirm the current code. The secret is stored encrypted server-side and shown only now.</span>
+            <input
+              v-model="totp.code"
+              class="input mono"
+              type="text"
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="6-digit code"
+              autocomplete="one-time-code"
+            />
+            <button class="btn btn-primary" type="button" :disabled="acctBusy || totp.code.length !== 6" @click="totpEnable">
+              Confirm and enable
+            </button>
+          </template>
+
+          <template v-if="totp.enabled">
+            <span class="acct-hint">Each login will ask for the code from your authenticator app after the passphrase.</span>
+            <input
+              v-model="totp.code"
+              class="input mono"
+              type="text"
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="Current 6-digit code"
+              autocomplete="one-time-code"
+            />
+            <button class="btn btn-ghost" type="button" :disabled="acctBusy || totp.code.length !== 6" @click="totpDisable">
+              Disable two-factor
+            </button>
+          </template>
         </div>
       </div>
     </div>
@@ -191,6 +298,22 @@ export default {
       paletteOpen: false,
       paletteQuery: '',
       paletteIndex: 0,
+      // Account security (r19): modal state + the two forms.
+      accountOpen: false,
+      acctBusy: false,
+      acctNotice: '',
+      acctError: '',
+      pwForm: { current: '', next: '', confirm: '' },
+      totp: { enabled: false, pending: false, secret: '', uri: '', code: '' },
+      mfaEnabled: false,
+      // Server identity (r19): fetched on a slow cadence — the version
+      // chip does not justify a heavy /api/status every 5 s.
+      version: null,
+      versionTimer: null,
+      // Idle auto-logout (r19): last user-activity timestamp + the
+      // watchdog interval handle.
+      lastActivity: Date.now(),
+      idleTimer: null,
     }
   },
   computed: {
@@ -239,8 +362,10 @@ export default {
         // the first polling interval after login.
         this.fetchHealth()
         this.startPolling()
+        this.startIdleWatch()
       } else {
         this.stopPolling()
+        this.stopIdleWatch()
       }
     },
   },
@@ -248,12 +373,22 @@ export default {
     if (this.authed) {
       this.fetchHealth()
       this.startPolling()
+      this.fetchVersion()
+      this.startIdleWatch()
     }
     window.addEventListener('keydown', this.onGlobalKeydown)
+    window.addEventListener('pointerdown', this.onUserActivity)
+    window.addEventListener('keydown', this.onUserActivity)
+    window.addEventListener('wheel', this.onUserActivity)
   },
   beforeUnmount() {
     this.stopPolling()
+    this.stopIdleWatch()
+    if (this.versionTimer) clearInterval(this.versionTimer)
     window.removeEventListener('keydown', this.onGlobalKeydown)
+    window.removeEventListener('pointerdown', this.onUserActivity)
+    window.removeEventListener('keydown', this.onUserActivity)
+    window.removeEventListener('wheel', this.onUserActivity)
   },
   methods: {
     isActive(item) {
@@ -325,6 +460,154 @@ export default {
       this.stopPolling()
       this.authed = false
       this.$router.push('/login')
+    },
+
+    // ---------- account security (r19) ----------
+    openAccount() {
+      this.acctNotice = ''
+      this.acctError = ''
+      this.pwForm = { current: '', next: '', confirm: '' }
+      this.totp = { enabled: false, pending: false, secret: '', uri: '', code: '' }
+      this.accountOpen = true
+      this.fetchTotpStatus()
+    },
+    closeAccount() {
+      this.accountOpen = false
+    },
+    async fetchTotpStatus() {
+      try {
+        const st = await api.get('/api/account/totp/status')
+        this.totp.enabled = !!st.enabled
+        this.totp.pending = !!st.pending
+        this.mfaEnabled = !!st.enabled
+      } catch {
+        /* the panel degrades to "unknown" silently — non-fatal */
+      }
+    },
+    async changePassword() {
+      if (this.acctBusy) return
+      if (this.pwForm.next !== this.pwForm.confirm) {
+        this.acctError = 'The two new passphrases do not match'
+        return
+      }
+      this.acctBusy = true
+      this.acctError = ''
+      this.acctNotice = ''
+      try {
+        await api.post('/api/account/password', {
+          current_password: this.pwForm.current,
+          new_password: this.pwForm.next,
+        })
+        // The server revoked every token for this user: force a clean
+        // re-login with the new passphrase (full navigation drops SPA
+        // state, matching the api.js expired-session behavior).
+        alert('Passphrase changed. Please sign in again.')
+        window.location.assign('/login')
+      } catch (e) {
+        this.acctError = e.message || 'Change failed'
+      } finally {
+        this.acctBusy = false
+      }
+    },
+    async totpSetup() {
+      if (this.acctBusy) return
+      this.acctBusy = true
+      this.acctError = ''
+      try {
+        const st = await api.post('/api/account/totp/setup', {})
+        this.totp.secret = st.secret || ''
+        this.totp.uri = st.otpauth_uri || ''
+        this.totp.pending = true
+        this.totp.code = ''
+      } catch (e) {
+        this.acctError = e.message || 'Setup failed'
+      } finally {
+        this.acctBusy = false
+      }
+    },
+    async totpEnable() {
+      if (this.acctBusy || this.totp.code.length !== 6) return
+      this.acctBusy = true
+      this.acctError = ''
+      try {
+        await api.post('/api/account/totp/enable', { code: this.totp.code.trim() })
+        this.totp.enabled = true
+        this.totp.pending = false
+        this.totp.secret = ''
+        this.totp.uri = ''
+        this.mfaEnabled = true
+        this.acctNotice = 'Two-factor authentication enabled.'
+      } catch (e) {
+        this.acctError = e.message || 'Enable failed'
+      } finally {
+        this.acctBusy = false
+      }
+    },
+    async totpDisable() {
+      if (this.acctBusy || this.totp.code.length !== 6) return
+      this.acctBusy = true
+      this.acctError = ''
+      try {
+        await api.post('/api/account/totp/disable', { code: this.totp.code.trim() })
+        this.totp.enabled = false
+        this.totp.pending = false
+        this.totp.code = ''
+        this.mfaEnabled = false
+        this.acctNotice = 'Two-factor authentication disabled.'
+      } catch (e) {
+        this.acctError = e.message || 'Disable failed'
+      } finally {
+        this.acctBusy = false
+      }
+    },
+    copySecret() {
+      if (this.totp.secret) navigator.clipboard?.writeText(this.totp.secret).catch(() => {})
+    },
+
+    // ---------- server identity chip (r19) ----------
+    async fetchVersion() {
+      if (!this.authed) return
+      try {
+        const st = await api.get('/api/status')
+        this.version = st && st.version ? { version: st.version, commit: st.commit } : null
+      } catch {
+        /* a failed status fetch keeps the previous chip value */
+      }
+      if (!this.versionTimer) {
+        this.versionTimer = setInterval(() => this.fetchVersion(), 60000)
+      }
+    },
+
+    // ---------- idle auto-logout (r19) ----------
+    onUserActivity() {
+      this.lastActivity = Date.now()
+    },
+    startIdleWatch() {
+      if (this.idleTimer) return
+      this.lastActivity = Date.now()
+      // Check every 30 s; 15 min of NO user interaction closes the
+      // session. Server polls (health/status) do NOT count as activity —
+      // they are this.onUserActivity-blind by construction because they
+      // fire no DOM events. Client-side only by design: it shrinks the
+      // exposed-console window; the JWT's own TTL stays the hard limit.
+      this.idleTimer = setInterval(() => {
+        if (!this.authed) return
+        if (Date.now() - this.lastActivity > 15 * 60 * 1000) {
+          ;['bty_token', 'bty_refresh', 'bty_expires', 'bty_user', 'bty_role'].forEach((k) =>
+            localStorage.removeItem(k)
+          )
+          this.stopPolling()
+          this.stopIdleWatch()
+          this.authed = false
+          window.location.assign('/login?idle=1')
+        }
+      }, 30000)
+    },
+    stopIdleWatch() {
+      if (this.idleTimer) {
+        clearInterval(this.idleTimer)
+        this.idleTimer = null
+      }
     },
   },
 }
@@ -446,6 +729,17 @@ export default {
   font-family: var(--mono);
 }
 .logout { justify-content: flex-start; }
+
+/* clickable account chip (r19) */
+.op-chip-btn {
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color var(--speed), background var(--speed);
+}
+.op-chip-btn:hover { border-color: rgba(110, 123, 242, 0.4); }
+.mfa-dot { color: var(--ok); font-weight: 600; }
 
 .backdrop {
   position: fixed;
@@ -637,6 +931,14 @@ export default {
   box-shadow: 0 0 6px rgba(229, 72, 77, 0.55);
 }
 .state-meta { color: var(--faint); font-size: 11.5px; }
+.state-version {
+  color: var(--accent);
+  font-size: 11.5px;
+  padding: 1px 7px;
+  border: 1px solid rgba(110, 123, 242, 0.35);
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
 @keyframes breathe {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
@@ -648,6 +950,99 @@ export default {
   max-width: 1280px;
   margin: 0 auto;
   padding: 28px 32px 48px;
+}
+
+/* ---------- account security modal (r19) ---------- */
+.acct-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh 16px 16px;
+}
+.acct {
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 10px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.acct-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.acct-title {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 15px;
+}
+.acct-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.acct-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.acct-hint {
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1.45;
+}
+.acct-notice {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ok);
+  background: rgba(63, 182, 139, 0.08);
+  border: 1px solid rgba(63, 182, 139, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.acct-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.totp-secret {
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  word-break: break-all;
+  padding: 9px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+  user-select: all;
+}
+.totp-uri {
+  font-size: 10.5px;
+  color: var(--faint);
+  word-break: break-all;
+  cursor: pointer;
 }
 
 /* ---------- responsive ---------- */

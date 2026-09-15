@@ -7,6 +7,16 @@
       </div>
       <div class="head-side">
         <span v-if="entries.length" class="badge">{{ filtered.length }}/{{ entries.length }} events</span>
+        <button
+          v-if="entries.length"
+          class="btn btn-ghost btn-sm"
+          type="button"
+          title="Download the loaded trail as CSV (RFC 4180, formula-safe)"
+          @click="exportCsv"
+        >
+          <IconDownload :size="14" />
+          <span>Export CSV</span>
+        </button>
         <span class="badge" :class="hasError ? 'badge-danger' : 'badge-ok'">
           <span class="dot" :class="hasError ? 'dot-danger' : 'dot-ok'" />
           {{ hasError ? 'sync error' : 'live' }}
@@ -91,6 +101,16 @@
         <span class="spinner" />
         <span class="muted small">Loading audit trail…</span>
       </div>
+
+      <!-- Cursor pagination (r19): appends the next OLDER page via
+           before_id. Hides itself once a page comes back short of the
+           requested size — the honest end-of-trail signal. -->
+      <div v-if="canLoadMore && !loading" class="load-more">
+        <button class="btn btn-ghost btn-sm" type="button" :disabled="loadingMore" @click="loadMore">
+          {{ loadingMore ? 'Loading…' : 'Load more' }}
+        </button>
+        <span class="small faint">showing {{ entries.length }} events</span>
+      </div>
     </div>
   </div>
 </template>
@@ -99,11 +119,12 @@
 import { api } from '../utils/api.js'
 import { notify } from '../utils/notifications.js'
 import { fmtDate } from '../utils/format.js'
-import { IconSearch, IconRefresh, IconAudit } from '../components/icons.js'
+import { toCSV, downloadText } from '../utils/csv.js'
+import { IconSearch, IconRefresh, IconAudit, IconDownload } from '../components/icons.js'
 
 export default {
   name: 'AuditView',
-  components: { IconSearch, IconRefresh, IconAudit },
+  components: { IconSearch, IconRefresh, IconAudit, IconDownload },
   data() {
     return {
       entries: [],
@@ -118,6 +139,10 @@ export default {
       // Server contract: 1..500. The select only offers the sane sizes.
       limitFilter: '500',
       timer: null,
+      // Cursor pagination (r19): whether an older page may exist. A full
+      // page means "maybe", a short page means "definitely not".
+      canLoadMore: false,
+      loadingMore: false,
     }
   },
   computed: {
@@ -159,20 +184,64 @@ export default {
     async fetchEntries() {
       // limit comes from the select; the API rejects anything outside
       // 1..500, so keep the select the single source of truth. The user
-      // filter rides along server-side (?user=) when set.
+      // filter rides along server-side (?user=) when set. A refresh
+      // resets the walk back to the first page.
       const limit = parseInt(this.limitFilter, 10)
-      let path = '/api/audit?limit=' + (limit > 0 && limit <= 500 ? limit : 500)
+      const size = limit > 0 && limit <= 500 ? limit : 500
+      let path = '/api/audit?limit=' + size
       if (this.userFilter) path += '&user=' + encodeURIComponent(this.userFilter)
       try {
         const data = await api.get(path)
         this.entries = Array.isArray(data) ? data : []
         this.hasError = false
+        this.canLoadMore = this.entries.length >= size
       } catch (e) {
         if (!e.expired) notify.error('Failed to load audit trail: ' + e.message)
         this.hasError = true
       } finally {
         this.loading = false
       }
+    },
+    async loadMore() {
+      if (this.loadingMore || !this.entries.length) return
+      this.loadingMore = true
+      const limit = parseInt(this.limitFilter, 10)
+      const size = limit > 0 && limit <= 500 ? limit : 500
+      // The cursor is the OLDEST id currently loaded — audit ids are
+      // monotonic, so "id < cursor" is exactly "everything older".
+      const cursor = this.entries[this.entries.length - 1].id
+      let path = '/api/audit?limit=' + size + '&before_id=' + encodeURIComponent(cursor)
+      if (this.userFilter) path += '&user=' + encodeURIComponent(this.userFilter)
+      try {
+        const data = await api.get(path)
+        const page = Array.isArray(data) ? data : []
+        this.entries = this.entries.concat(page)
+        this.canLoadMore = page.length >= size
+      } catch (e) {
+        if (!e.expired) notify.error('Failed to load more events: ' + e.message)
+      } finally {
+        this.loadingMore = false
+      }
+    },
+    exportCsv() {
+      // Same contract as Files/Vault: serialize what the CURRENT view
+      // holds (filters applied), through the shared formula-guarded
+      // serializer — audit details carry operator names and IPs and must
+      // land as inert text in a spreadsheet.
+      const rows = this.filtered.map((e) => ({
+        id: e.id,
+        created: new Date(e.created).toISOString(),
+        action: e.action,
+        operator: e.operator || 'system',
+        detail: e.detail || '',
+      }))
+      const csv = toCSV(
+        ['id', 'created', 'action', 'operator', 'detail'],
+        rows,
+        ['id', 'created', 'action', 'operator', 'detail']
+      )
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadText('worldc2-audit-' + stamp + '.csv', csv)
     },
   },
 }
@@ -230,6 +299,15 @@ export default {
   align-items: center;
   gap: 10px;
   padding: 20px;
+}
+
+.load-more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+  padding: 14px;
+  border-top: 1px solid var(--border-soft);
 }
 
 @media (max-width: 640px) {

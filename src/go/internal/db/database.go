@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -497,6 +498,21 @@ const MaxAuditPage = 500
 // delete path) lives in PruneAuditOlderThan, a product policy, not a
 // per-request mutation.
 func (d *DB) ListAuditEntries(limit int, action, user string) ([]AuditRecord, error) {
+	return d.listAuditEntries(limit, action, user, 0)
+}
+
+// ListAuditEntriesBefore is the cursor variant (r19): only rows with
+// a.id < beforeID are considered, which is the whole cursor — audit_log.id
+// is a monotonically increasing AUTOINCREMENT primary key, so "the page
+// before this id" is orderable without any timestamp formatting traps
+// (unlike the tasks cursor, which must preserve the driver's stored text
+// byte-for-byte). beforeID <= 0 disables the filter and reproduces
+// ListAuditEntries exactly.
+func (d *DB) ListAuditEntriesBefore(limit int, action, user string, beforeID int64) ([]AuditRecord, error) {
+	return d.listAuditEntries(limit, action, user, beforeID)
+}
+
+func (d *DB) listAuditEntries(limit int, action, user string, beforeID int64) ([]AuditRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -510,18 +526,21 @@ func (d *DB) ListAuditEntries(limit int, action, user string) ([]AuditRecord, er
 	q := `SELECT a.id, a.action, a.detail, COALESCE(o.username, ''), a.timestamp
               FROM audit_log a LEFT JOIN operators o ON o.id = a.operator_id`
 	args := []interface{}{}
+	conds := []string{}
+	if beforeID > 0 {
+		conds = append(conds, `a.id < ?`)
+		args = append(args, beforeID)
+	}
 	if action != "" {
-		q += ` WHERE a.action = ?`
+		conds = append(conds, `a.action = ?`)
 		args = append(args, action)
 	}
 	if user != "" {
-		if action != "" {
-			q += ` AND`
-		} else {
-			q += ` WHERE`
-		}
-		q += ` o.username = ?`
+		conds = append(conds, `o.username = ?`)
 		args = append(args, user)
+	}
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, ` AND `)
 	}
 	q += ` ORDER BY a.id DESC LIMIT ?`
 	args = append(args, limit)
@@ -630,25 +649,36 @@ func (d *DB) CreateOperatorWithHash(username, passwordHash, role string) error {
 }
 
 // AuthenticateOperator verifies operator credentials.
+//
+// r19: the check now runs against the full auth state so the ACCOUNT
+// lockout (operators_security.go) sits in front of bcrypt — a locked
+// account answers ErrOperatorLocked without any hash work, and a correct
+// password inside the window buys exactly what a wrong one does. The
+// returned error for "unknown user" and "wrong password" stays the same
+// opaque "invalid credentials"; only the lock has a typed error so the
+// HTTP layer can audit it while answering the client identically.
 func (d *DB) AuthenticateOperator(username, password string) (*OperatorRecord, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	op := &OperatorRecord{}
-	err := d.conn.QueryRow(`
-                SELECT id, username, password_hash, role, created_at
-                FROM operators WHERE username=?`, username).Scan(
-		&op.ID, &op.Username, &op.PasswordHash, &op.Role, &op.CreatedAt,
-	)
+	st, err := d.loadOperatorAuthState(username)
 	if err != nil {
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(op.PasswordHash), []byte(password)); err != nil {
+	if d.checkOperatorLock(st) {
+		return nil, ErrOperatorLocked
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(st.PasswordHash), []byte(password)); err != nil {
+		d.registerAuthFailure(st.ID, st.FailedAttempts+1 >= lockoutThreshold)
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	return op, nil
+	d.registerAuthSuccess(st.ID)
+	return &OperatorRecord{
+		ID:        st.ID,
+		Username:  st.Username,
+		Role:      st.Role,
+		CreatedAt: st.CreatedAt,
+	}, nil
 }
 
 // OperatorIDByUsername resolves an operator's numeric primary key. The auth
@@ -694,12 +724,15 @@ func (d *DB) GetOperatorByID(id int) (*OperatorRecord, error) {
 	return op, nil
 }
 
-// ListOperators returns all operators (without password hashes).
+// ListOperators returns all operators (without password hashes or TOTP
+// secrets). r19 adds the totp_enabled flag: the admin's account hygiene
+// view shows who has a second factor WITHOUT ever exposing the secret
+// itself — enrollment status is an operational fact, the factor is not.
 func (d *DB) ListOperators() ([]map[string]interface{}, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	rows, err := d.conn.Query(`SELECT id, username, role, created_at FROM operators ORDER BY created_at DESC`)
+	rows, err := d.conn.Query(`SELECT id, username, role, created_at, totp_enabled FROM operators ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -708,14 +741,16 @@ func (d *DB) ListOperators() ([]map[string]interface{}, error) {
 	var operators []map[string]interface{}
 	for rows.Next() {
 		var op OperatorRecord
-		if err := rows.Scan(&op.ID, &op.Username, &op.Role, &op.CreatedAt); err != nil {
+		var totpEnabled int
+		if err := rows.Scan(&op.ID, &op.Username, &op.Role, &op.CreatedAt, &totpEnabled); err != nil {
 			return nil, err
 		}
 		operators = append(operators, map[string]interface{}{
-			"id":         op.ID,
-			"username":   op.Username,
-			"role":       op.Role,
-			"created_at": op.CreatedAt,
+			"id":           op.ID,
+			"username":     op.Username,
+			"role":         op.Role,
+			"created_at":   op.CreatedAt,
+			"totp_enabled": totpEnabled == 1,
 		})
 	}
 	return operators, rows.Err()

@@ -48,6 +48,9 @@
           <tr>
             <th>Username</th>
             <th>Role</th>
+            <th>MFA</th>
+            <th>Last activity</th>
+            <th>Events 30d</th>
             <th>Created</th>
             <th style="width: 90px">Actions</th>
           </tr>
@@ -60,6 +63,15 @@
                 {{ op.role || 'operator' }}
               </span>
             </td>
+            <td>
+              <span v-if="op.totp_enabled" class="mfa-pill">TOTP</span>
+              <span v-else class="small faint">—</span>
+            </td>
+            <td class="small">
+              <span v-if="op.last_activity" :title="fmtDate(op.last_activity)">{{ relTime(op.last_activity) }}</span>
+              <span v-else class="faint">never</span>
+            </td>
+            <td class="small num">{{ op.events_30d != null ? op.events_30d : '—' }}</td>
             <td class="num">{{ fmtDate(op.created_at) }}</td>
             <td>
               <button
@@ -120,6 +132,17 @@ export default {
       if (role === 'admin') return 'badge-danger'
       if (role === 'viewer') return ''
       return 'badge-accent'
+    },
+    relTime(ts) {
+      // Compact relative time for the activity column; the exact UTC
+      // timestamp lives in the title attribute.
+      const then = new Date(ts).getTime()
+      if (Number.isNaN(then)) return '—'
+      const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
+      if (s < 60) return s + 's ago'
+      if (s < 3600) return Math.floor(s / 60) + 'm ago'
+      if (s < 86400) return Math.floor(s / 3600) + 'h ago'
+      return Math.floor(s / 86400) + 'd ago'
     },
     async fetchOperators() {
       try {
@@ -183,6 +206,16 @@ export default {
 }
 
 .fw { font-weight: 600; }
+.mfa-pill {
+  display: inline-block;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--ok);
+  border: 1px solid rgba(63, 182, 139, 0.4);
+  background: rgba(63, 182, 139, 0.08);
+}
 .loading-row {
   display: flex;
   align-items: center;

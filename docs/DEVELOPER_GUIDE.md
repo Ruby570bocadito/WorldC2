@@ -174,7 +174,7 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | GET/POST/DELETE | `/api/socks` | Yes | SOCKS proxy |
 | GET/POST/DELETE | `/api/portfwd` | Yes | Port forwarding |
 | GET/POST/DELETE | `/api/operators` | Admin | Operator management |
-| GET | `/api/audit` | `audit:read` | Read the append-only audit trail (round 17) — every API call, auth event and lifecycle action has been logged to `audit_log` by middleware since round 1; this is its read API. `?limit=1..500` (default 500, server-clamped), `?action=<exact type>` (≤ 64 chars; unknown values return an empty array) and — since round 18 — `?user=<exact username>`: the middleware now resolves each authenticated caller's numeric id (X-Auth-UID) and the trail stores it, so per-account attribution is a JOIN, not a text search; entries are `{id, action, detail, operator, created}` with `operator` empty for system events. Retention (the ONLY delete path) lives in `audit.retention_days` — pruned at startup and hourly, counted in `worldc2_audit_pruned_total` |
+| GET | `/api/audit` | `audit:read` | Read the append-only audit trail (round 17) — every API call, auth event and lifecycle action has been logged to `audit_log` by middleware since round 1; this is its read API. `?limit=1..500` (default 500, server-clamped), `?action=<exact type>` (≤ 64 chars; unknown values return an empty array) and — since round 18 — `?user=<exact username>`: the middleware now resolves each authenticated caller's numeric id (X-Auth-UID) and the trail stores it, so per-account attribution is a JOIN, not a text search; entries are `{id, action, detail, operator, created}` with `operator` empty for system events. Round 19 adds `?before_id=N` cursor pagination — audit ids are monotonic AUTOINCREMENT, so "the page before this id" needs no timestamp formatting traps (0/absent = first page; negative/non-integer → 400; a short page is the honest end-of-trail). Retention (the ONLY delete path) lives in `audit.retention_days` — pruned at startup and hourly, counted in `worldc2_audit_pruned_total` |
 | POST | `/api/login` | No | Authenticate, returns access + refresh JWT |
 | POST | `/api/refresh` | No | Rotate: consumes the presented refresh token and returns a new access token **plus a new refresh token** (store both; replaying a consumed refresh returns 401) |
 | GET/DELETE | `/api/modules/:name` | Yes | Delete module (`modules:delete`) |
@@ -189,6 +189,9 @@ After key exchange, Ciphertext = XChaCha20-Poly1305(EnvelopeInner)
 | POST | `/api/webhooks/test?id=...` | Admin | Fire ONE synthetic test event at a destination (round 18): synchronous, bounded by the destination timeout, answer `{"delivered": true}` or 200 `{"delivered": false, "error": "..."}` — a dead endpoint is the RESULT, not a server error. The attempt folds into the same ledger; the synthetic event carries only the destination id and a constant note (no engagement data) and deliberately bypasses the event-type subscription (reachability is the point) |
 | POST | `/api/mtls/cert` | Admin | Issue mTLS client certificate. `agent_id` (optional — auto-generated when empty) becomes the X.509 CommonName and is validated: 1–64 characters of `[A-Za-z0-9._-]`, else 400; validation runs before the mTLS-enabled gate |
 | GET/POST/DELETE | `/api/operators/:id` | Admin | Delete operator — resolves the account by numeric id, revokes its JWTs by username, 404 on unknown ids |
+| DELETE | `/api/operators/:id/totp` | Admin | Reset an operator's TOTP enrollment (r19, lost-authenticator recovery) — wipes the stored secret and flag, NEVER reveals them, lands in the trail as `operator_totp_reset`, does not touch the account's sessions |
+| POST | `/api/account/password` | Any authenticated operator | Self-service password change (r19): current password verified through the SAME bcrypt + lockout path as login (brute-forcing it trips the lockout), 10–128 char floor, no-op rotations refused, then EVERY token for the user is revoked (access + refresh, ms-precision `iatms` cut) — audited as `operator_password_change` |
+| GET/POST | `/api/account/totp/status` · `/setup` · `/enable` · `/disable` | Any authenticated operator | TOTP MFA lifecycle (r19): setup stores a DISABLED crypto/rand secret (encrypted at rest with the column encryptor when `WORLDC2_MASTER_KEY` is set) returned ONCE with the escaped `otpauth://` URI; enable demands one valid RFC 6238 code (SHA-1/30 s/±1 skew, constant-time compare); disable demands the CURRENT code; status exposes `{enabled, pending}` only. Wrong codes at login count toward the lockout; a missing code answers `401 {totp_required:true}` WITHOUT counting |
 
 ## Roles and permissions matrix
 
@@ -285,6 +288,18 @@ and logout. Round 17 adds `round17.spec.js`: the audit-log view (live entries
 + filters), the Files view (seeded through the real `POST /api/files`, export
 CSV download event, purge modal Esc-cancel) and the Dashboard SIEM webhook
 health panel (a webhook is registered through the real API and the panel must
+show the row). Round 19 adds `round19.spec.js`: the self-service password
+change (wrong current → 401, change → every old token revoked, the login form
+accepts the new passphrase), the FULL TOTP journey (setup → WebCrypto-computed
+code → enable → the login form reveals the authenticator-code field →
+two-step login lands in the console → password-only API login answers
+`totp_required`) and the audit cursor/CSV surface; specs are idempotent
+(recreate-tolerant seeding) and the Files spec purges its artifact at the
+end, so the suite is re-runnable against a persistent dev server. Two
+implementation notes the specs encode: the console project's authed
+storageState must be dropped before exercising the login form, and an
+operator delete+recreate+login sequence needs a >1s gap (JWT revocation is
+millisecond-precise since round 19 — see the changelog). The suite
 appear). Round 18 adds `round18.spec.js`: the command palette (Ctrl+K opens,
 filters, `Enter` navigates to Vault, `Esc` closes), the audit view's operator
 column + server-side `?user=` filter (asserted on the outgoing request) and

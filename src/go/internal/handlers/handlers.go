@@ -30,6 +30,8 @@ import (
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/module"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/reporting"
 	"github.com/Ruby570bocadito/WorldC2/src/go/internal/siem"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/totp"
+	"github.com/Ruby570bocadito/WorldC2/src/go/internal/version"
 )
 
 // handleLogin authenticates an operator and returns JWT tokens.
@@ -42,6 +44,9 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 	var loginReq struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// TOTP is the optional second factor (r19). Absent/empty for
+		// accounts without MFA — existing clients are unaffected.
+		TOTP string `json:"totp"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&loginReq); err != nil {
 		http.Error(w, "invalid JSON", 400)
@@ -53,9 +58,51 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		// Audit the resolved client IP (trusted-proxy aware), not the
 		// raw RemoteAddr — behind a reverse proxy the raw address
 		// would blame the proxy for every failed attempt.
-		r.server.DB().LogAction(0, "auth_failed", r.rateLimiter.ResolveClientIP(req))
+		//
+		// The lock has its own audit action but the SAME generic
+		// client body as any other failure: "locked" would tell an
+		// attacker their target exists, and "invalid credentials"
+		// versus "locked" would hand them a lock-state oracle.
+		if err == db.ErrOperatorLocked {
+			r.server.DB().LogAction(0, "auth_locked", "account locked: "+r.rateLimiter.ResolveClientIP(req))
+		} else {
+			r.server.DB().LogAction(0, "auth_failed", r.rateLimiter.ResolveClientIP(req))
+		}
 		http.Error(w, `{"error":"invalid credentials"}`, 401)
 		return
+	}
+
+	// Second factor (r19): when MFA is enabled for this account, a
+	// correct password alone is NOT a login. Missing code → an honest
+	// 401 with totp_required so the console can ask for the code
+	// (this state is a password success — it must NOT count as an
+	// auth failure, or every first attempt of a legitimate operator
+	// would push their account toward the lockout). Wrong code → a
+	// generic 401 that DOES count: guessing 6-digit codes has to trip
+	// the same per-account wall as guessing passwords.
+	totpState, terr := r.server.DB().GetOperatorTOTPState(operator.Username)
+	if terr != nil {
+		http.Error(w, `{"error":"database error"}`, 500)
+		return
+	}
+	if totpState.Enabled {
+		code := strings.TrimSpace(loginReq.TOTP)
+		if code == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(401)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":         "authenticator code required",
+				"totp_required": true,
+			})
+			return
+		}
+		if !totp.Validate(totpState.Secret, code, time.Now()) {
+			r.server.DB().RegisterAuthFailure(operator.Username)
+			r.server.DB().LogAction(0, "auth_failed", "totp mismatch "+r.rateLimiter.ResolveClientIP(req))
+			http.Error(w, `{"error":"invalid credentials"}`, 401)
+			return
+		}
+		r.server.DB().RegisterAuthSuccess(operator.Username)
 	}
 
 	token, err := r.server.TokenManager().GenerateToken(operator.Username, operator.Role)
@@ -182,12 +229,37 @@ func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
 // handleStatus returns the operational telemetry that used to be exposed on
 // the public /api/health: active session count, listeners and uptime. It is
 // authenticated and gated by sessions:list so only real operators see it.
+//
+// r19 adds identity and health fields the console topbar and the Operators
+// view render: build identity (same shape as the worldc2_build_info metric),
+// database liveness and the two table counts that are cheapest to reason
+// about — operator accounts and audit rows. Everything here is a count or a
+// boolean: no hostnames, no session ids, no credential material.
 func (r *Router) handleStatus(w http.ResponseWriter, req *http.Request) {
+	dbOK := r.server.DB().Healthy()
+	operatorCount, opErr := r.server.DB().CountOperators()
+	auditCount, auditErr := r.server.DB().CountAuditEntries()
+
+	// A failed count must not fail the whole payload: status is a
+	// diagnostic view — degrade the field, keep the answer.
+	if opErr != nil {
+		operatorCount = -1
+	}
+	if auditErr != nil {
+		auditCount = -1
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
 		"active_sessions": r.server.ActiveSessions(),
 		"listeners":       r.server.ListenerCount(),
 		"uptime_seconds":  r.server.UptimeSeconds(),
+		"version":         version.Version,
+		"commit":          version.Commit,
+		"go_version":      version.GoVersion,
+		"db_ok":           dbOK,
+		"operators":       operatorCount,
+		"audit_entries":   auditCount,
 	})
 }
 
@@ -763,6 +835,33 @@ func (r *Router) handleOperators(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
+		// r19: merge the per-account audit summary into the listing
+		// (additive keys). The activity query scans the audit trail
+		// once for ALL operators — doing it per operator would turn
+		// a 4-account table into 4 queries and a 40-account table
+		// into 40. Operators with no attributed history simply omit
+		// the keys; the console renders "never".
+		activity, aerr := r.server.DB().OperatorActivity()
+		if aerr == nil && operators != nil {
+			for _, op := range operators {
+				row, ok := activity[op["id"].(int)]
+				if !ok {
+					continue
+				}
+				rec := map[string]interface{}{
+					"events_30d": row.Events30d,
+				}
+				if row.LastActivity.Valid {
+					rec["last_activity"] = row.LastActivity.Time
+				}
+				if row.LastLogin.Valid {
+					rec["last_login"] = row.LastLogin.Time
+				}
+				for k, v := range rec {
+					op[k] = v
+				}
+			}
+		}
 		json.NewEncoder(w).Encode(operators)
 		return
 	}
@@ -798,14 +897,46 @@ func (r *Router) handleOperators(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// handleOperatorDelete deletes an operator.
+// handleOperatorDelete deletes an operator — or, when the path is
+// /api/operators/{id}/totp (r19), resets the operator's TOTP enrollment
+// (admin recovery for a lost authenticator). The MFA reset wipes the
+// stored secret and flag; it never reveals them, and it does NOT touch the
+// operator's sessions — losing the phone must not mean losing the machine.
 func (r *Router) handleOperatorDelete(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "DELETE" {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	idStr := req.URL.Path[len("/api/operators/"):]
-	id, err := strconv.Atoi(idStr)
+	path := strings.TrimPrefix(req.URL.Path, "/api/operators/")
+
+	// MFA reset subresource: /api/operators/{id}/totp
+	if strings.HasSuffix(path, "/totp") {
+		idStr := strings.TrimSuffix(path, "/totp")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.Error(w, "invalid operator id", 400)
+			return
+		}
+		op, err := r.server.DB().GetOperatorByID(id)
+		if err != nil {
+			http.Error(w, "operator not found", 404)
+			return
+		}
+		if err := r.server.DB().DisableTOTP(id); err != nil {
+			http.Error(w, `{"error":"database error"}`, 500)
+			return
+		}
+		admin := req.Header.Get("X-Auth-User")
+		r.server.DB().LogAction(0, "operator_totp_reset",
+			"MFA reset for "+op.Username+" by "+admin)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":   "totp_reset",
+			"username": op.Username,
+		})
+		return
+	}
+
+	id, err := strconv.Atoi(path)
 	if err != nil {
 		http.Error(w, "invalid operator id", 400)
 		return
@@ -819,7 +950,7 @@ func (r *Router) handleOperatorDelete(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "operator not found", 404)
 		return
 	}
-	if err := r.server.DB().DeleteOperator(idStr); err != nil {
+	if err := r.server.DB().DeleteOperator(strconv.Itoa(id)); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -829,7 +960,7 @@ func (r *Router) handleOperatorDelete(w http.ResponseWriter, req *http.Request) 
 	// on every request, so both layers have to be bypassed to keep a dead
 	// operator's token alive.
 	r.server.TokenManager().RevokeUser(op.Username)
-	r.server.DB().LogAction(0, "operator_delete", op.Username+" (id "+idStr+")")
+	r.server.DB().LogAction(0, "operator_delete", op.Username+" (id "+strconv.Itoa(id)+")")
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "username": op.Username})
 }
 

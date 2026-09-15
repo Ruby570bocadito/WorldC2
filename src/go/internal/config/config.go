@@ -62,6 +62,14 @@ type APIConfig struct {
 	// means no cross-origin browser access at all. A "*" entry is rejected
 	// at startup — a C2 must never hand out wildcard CORS.
 	AllowedOrigins []string `yaml:"allowed_origins"`
+	// LoginRatePerMin caps POST /api/login per client IP per minute (r19).
+	// 0/unset keeps the historical 10 — the brute-force backstop for
+	// single-source guessing. The per-ACCOUNT lockout (5 consecutive
+	// failures → 5-minute wall, operators_security.go) is the primary
+	// guess-rate control; this bucket additionally bounds bcrypt work
+	// per IP. Raise it only when many operators legitimately share one
+	// egress IP (VPN/NAT) — the browser E2E suite does exactly that.
+	LoginRatePerMin int `yaml:"login_rate_per_min"`
 }
 
 // DatabaseConfig holds database connection info.

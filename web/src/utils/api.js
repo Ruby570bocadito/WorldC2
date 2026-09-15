@@ -126,7 +126,11 @@ export async function apiFetch(path, options = {}) {
 
   let res = await fetch(path, opts)
 
-  if (res.status === 401 && !opts.__retried) {
+  // 401 recovery does NOT apply to /api/login: its 401s are ANSWERS
+  // (invalid credentials, or totp_required asking for the second factor),
+  // not expired-session signals — trying a refresh there would swallow
+  // the structured response the login form needs.
+  if (res.status === 401 && !opts.__retried && !path.startsWith('/api/login')) {
     const newToken = await refreshAccessToken()
     if (newToken) {
       opts.__retried = true

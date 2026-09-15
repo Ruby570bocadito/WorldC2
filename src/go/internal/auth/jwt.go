@@ -32,6 +32,16 @@ type jwtPayload struct {
 	TokenUse  string `json:"token_use"` // "access" or "refresh"
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
+	// IatMs is the millisecond-precision mint time (r19). The seconds-
+	// resolution iat cannot distinguish a token minted AFTER a
+	// revocation from one minted just BEFORE it within the same wall-
+	// clock second — with the old conservative now+1s cut, an operator
+	// who changed their password and logged back in within the same
+	// second was silently bounced (their fresh token validated as
+	// "revoked"). Tokens minted by this build always carry iatms;
+	// legacy tokens (none in practice — 12h max validity) fall back
+	// to the conservative seconds rule.
+	IatMs int64 `json:"iatms,omitempty"`
 	// Jti (JWT ID) identifies refresh tokens so rotations can deny replays
 	// of an already-consumed token. Access tokens carry none (stateless).
 	Jti string `json:"jti,omitempty"`
@@ -49,11 +59,11 @@ type TokenManager struct {
 	tokenDuration time.Duration
 	issuer        string
 
-	// revokedBefore maps username -> unix timestamp: tokens for that user
-	// with an issued-at (iat) strictly older than the timestamp are rejected.
-	// It backs RevokeUser, so deleting an operator (or otherwise revoking
-	// access) invalidates every token minted before that moment, even ones
-	// whose HMAC is still valid and whose signing key survives restarts.
+	// revokedBefore maps username -> revocation moment in MILLISECONDS
+	// (r19). Tokens for that user minted strictly BEFORE the moment are
+	// rejected; tokens minted after it (a legitimate re-login right
+	// after a password change) stay valid. See jwtPayload.IatMs for the
+	// precision rationale.
 	revokedMu     sync.RWMutex
 	revokedBefore map[string]int64
 
@@ -79,19 +89,16 @@ func NewTokenManager(secretKey []byte, tokenDuration time.Duration) *TokenManage
 	}
 }
 
-// RevokeUser invalidates every outstanding token for the given username that
-// was issued up to and including the revocation moment. Tokens minted
-// afterwards (e.g. a re-created operator with the same name) remain valid.
-// The cut is conservative (now+1s, because iat has 1-second resolution): a
-// token legitimately minted within the same second as the revocation is
-// rejected too — erring on the safe side of the window. Revocations live for
-// the lifetime of the process; the signing key is persisted in the secrets
-// store, so without this registry a deleted operator would keep working until
-// their token expired.
+// RevokeUser invalidates every outstanding token for the given username
+// that was minted before this exact moment (millisecond precision). Tokens
+// minted afterwards — e.g. the re-login a password change forces — remain
+// valid, which is the whole point: kill the stolen session, not the owner.
+// The signing key is persisted in the secrets store, so without this
+// registry a deleted operator would keep working until token expiry.
 func (tm *TokenManager) RevokeUser(username string) {
 	tm.revokedMu.Lock()
 	defer tm.revokedMu.Unlock()
-	tm.revokedBefore[username] = time.Now().Unix() + 1
+	tm.revokedBefore[username] = time.Now().UnixMilli()
 }
 
 func (tm *TokenManager) sign(headerB64, payloadB64 string) string {
@@ -101,20 +108,27 @@ func (tm *TokenManager) sign(headerB64, payloadB64 string) string {
 }
 
 func (tm *TokenManager) buildToken(sub, role, tokenUse string, ttl time.Duration) (string, error) {
-	return tm.buildTokenJti(sub, role, tokenUse, ttl, "")
+	return tm.buildTokenMs(sub, role, tokenUse, ttl, "")
 }
 
 // buildTokenJti is buildToken with an optional jti for refresh tokens.
 func (tm *TokenManager) buildTokenJti(sub, role, tokenUse string, ttl time.Duration, jti string) (string, error) {
-	now := time.Now().Unix()
+	return tm.buildTokenMs(sub, role, tokenUse, ttl, jti)
+}
+
+// buildTokenMs is the single minting path: it stamps both the seconds
+// iat (interop) and the millisecond iatms (revocation precision).
+func (tm *TokenManager) buildTokenMs(sub, role, tokenUse string, ttl time.Duration, jti string) (string, error) {
+	now := time.Now()
 
 	header := jwtHeader{Alg: "HS256", Typ: "JWT"}
 	payload := jwtPayload{
 		Sub:       sub,
 		Role:      role,
 		TokenUse:  tokenUse,
-		IssuedAt:  now,
-		ExpiresAt: now + int64(ttl.Seconds()),
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Unix() + int64(ttl.Seconds()),
+		IatMs:     now.UnixMilli(),
 		Jti:       jti,
 	}
 
@@ -135,7 +149,7 @@ func (tm *TokenManager) buildTokenJti(sub, role, tokenUse string, ttl time.Durat
 
 // GenerateToken creates a new access JWT for the given user.
 func (tm *TokenManager) GenerateToken(username, role string) (string, error) {
-	return tm.buildToken(username, role, TokenUseAccess, tm.tokenDuration)
+	return tm.buildTokenMs(username, role, TokenUseAccess, tm.tokenDuration, "")
 }
 
 // GenerateRefreshToken creates a long-lived refresh token carrying a unique
@@ -306,12 +320,21 @@ func (tm *TokenManager) validate(tokenString string) (sub, role, tokenUse string
 		return "", "", "", fmt.Errorf("token expired")
 	}
 
-	// Reject tokens minted before a per-user revocation event.
+	// Reject tokens minted before a per-user revocation event. The
+	// millisecond claim decides when present (minted by this build);
+	// legacy second-only tokens fall back to the conservative
+	// now+1s rule they were always subject to.
 	tm.revokedMu.RLock()
-	minIat, revoked := tm.revokedBefore[payload.Sub]
+	revokedAtMs, revoked := tm.revokedBefore[payload.Sub]
 	tm.revokedMu.RUnlock()
-	if revoked && payload.IssuedAt < minIat {
-		return "", "", "", fmt.Errorf("token revoked for user %q", payload.Sub)
+	if revoked {
+		if payload.IatMs > 0 {
+			if payload.IatMs < revokedAtMs {
+				return "", "", "", fmt.Errorf("token revoked for user %q", payload.Sub)
+			}
+		} else if payload.IssuedAt < revokedAtMs/1000+1 {
+			return "", "", "", fmt.Errorf("token revoked for user %q", payload.Sub)
+		}
 	}
 
 	return payload.Sub, payload.Role, payload.TokenUse, nil

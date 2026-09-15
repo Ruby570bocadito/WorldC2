@@ -77,6 +77,16 @@ test.describe.serial('round 17 console surface', () => {
     await page.keyboard.press('Escape')
     await expect(modal).toBeHidden()
     await expect(row).toBeVisible()
+
+    // Then really purge: the suite must leave the listing as it found it
+    // (empty on a fresh DB) so repeat runs against a persistent dev
+    // server stay green — CI's fresh DB never notices the difference.
+    // (The button lives in the row's Actions cell, hence the tr scope.)
+    const tr = page.locator('tr', { hasText: 'e2e-report.bin' })
+    await tr.locator('button[aria-label="Purge file"]').click()
+    await expect(modal).toBeVisible()
+    await modal.locator('button:has-text("Purge file")').click()
+    await expect(tr).toHaveCount(0, { timeout: 10_000 })
   })
 
   test('dashboard surfaces the SIEM webhook health panel for admins', async ({ page, request }) => {

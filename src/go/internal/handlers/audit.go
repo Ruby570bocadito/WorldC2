@@ -33,6 +33,12 @@ import (
 //     real operator_id, so "what did THIS account do" is a query, not a
 //     text search. Unknown usernames answer an empty array (no existence
 //     oracle), and the cap mirrors ?action=.
+//   - ?before_id=N  — cursor pagination (r19): only rows with id < N are
+//     returned. audit_log.id is a monotonic AUTOINCREMENT primary key, so
+//     the cursor is a plain integer — no timestamp-format traps, no
+//     composite tiebreaker (ids cannot collide). The console walks the
+//     trail with it ("Load more"); the response stays a bare JSON array
+//     so every existing consumer keeps parsing untouched.
 func (r *Router) handleAudit(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		http.Error(w, `{"error":"method not allowed"}`, 405)
@@ -63,7 +69,23 @@ func (r *Router) handleAudit(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	entries, err := r.server.DB().ListAuditEntries(limit, action, user)
+	// Cursor: strict integer. An absent OR zero cursor means "first
+	// page" (the DB layer treats beforeID <= 0 as no filter — 0 is
+	// also what a client passes to restart the walk). Negatives,
+	// float strings and overflow-scale numbers are a malformed cursor
+	// and answer 400 — the entry boundary stays loud, the SQL never
+	// sees anything but a bound int64 parameter.
+	var beforeID int64
+	if raw := q.Get("before_id"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			http.Error(w, `{"error":"before_id must be a non-negative integer"}`, 400)
+			return
+		}
+		beforeID = n
+	}
+
+	entries, err := r.server.DB().ListAuditEntriesBefore(limit, action, user, beforeID)
 	if err != nil {
 		http.Error(w, `{"error":"database error"}`, 500)
 		return

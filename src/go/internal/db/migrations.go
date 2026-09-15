@@ -240,6 +240,31 @@ func Migrations() []Migration {
                                 DROP TABLE IF EXISTS _kdf_meta;
                         `,
 		},
+		{
+			Version: 11,
+			Name:    "operator_security_columns",
+			Up: `
+                                -- TOTP MFA (r19): the shared secret, stored
+                                -- ENCRYPTED with the same column encryptor as
+                                -- vault credentials whenever a master key is
+                                -- configured ('' until the operator runs
+                                -- setup), and the enable flag — a secret that
+                                -- exists but is not enabled never gates login
+                                -- (setup must be confirmed with a valid code).
+                                ALTER TABLE operators ADD COLUMN totp_secret TEXT DEFAULT '';
+                                ALTER TABLE operators ADD COLUMN totp_enabled INTEGER DEFAULT 0;
+                                -- Brute-force lockout (r19): consecutive failed
+                                -- password/TOTP attempts since the last success
+                                -- and the timestamp until which the account
+                                -- refuses logins. Both reset on success.
+                                ALTER TABLE operators ADD COLUMN failed_attempts INTEGER DEFAULT 0;
+                                ALTER TABLE operators ADD COLUMN locked_until DATETIME;
+                        `,
+			Down: `
+                                -- No-op for downgrade (SQLite ALTER DROP
+                                -- COLUMN is unavailable on older engines).
+                        `,
+		},
 	}
 }
 

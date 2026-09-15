@@ -45,6 +45,24 @@ components:
           type: integer
           format: int64
           description: Seconds since server start
+        version:
+          type: string
+          example: v1.20.0
+        commit:
+          type: string
+          example: unknown
+        go_version:
+          type: string
+          example: go1.25.0
+        db_ok:
+          type: boolean
+          description: Database answers a round-trip ping
+        operators:
+          type: integer
+          description: Account count; -1 when the query fails
+        audit_entries:
+          type: integer
+          description: Audit trail size; -1 when the query fails
 
     Session:
       type: object
@@ -180,6 +198,12 @@ paths:
   /api/login:
     post:
       summary: Authenticate and obtain a JWT pair
+      description: >-
+        r19: when the account has TOTP MFA enabled, a correct password
+        alone answers 401 with {error, totp_required:true} and does NOT
+        count as an auth failure; repeat the call with the 6-digit code in
+        the totp field. A WRONG code answers the same generic 401 as a bad
+        password and DOES count toward the per-account lockout.
       tags: [Auth]
       requestBody:
         required: true
@@ -275,12 +299,18 @@ paths:
   /api/status:
     get:
       summary: Operational telemetry (requires sessions:list)
+      description: >-
+        r19 enrichment: build identity (version/commit/go_version — the
+        same values worldc2_build_info exposes), database liveness (db_ok)
+        and the two cheapest fleet sanity counts (operators, audit_entries,
+        -1 when their query fails). Counts and booleans only — no
+        hostnames, session ids or credential material.
       tags: [System]
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: Active sessions, listeners and uptime
+          description: Active sessions, listeners, uptime, build identity and health
           content:
             application/json:
               schema:
@@ -824,12 +854,18 @@ paths:
   /api/operators:
     get:
       summary: List operators (admin only)
+      description: >-
+        Returns every account without password hashes or MFA secrets.
+        r19 additions: totp_enabled (MFA enrollment status), last_activity
+        and last_login (audit trail MAX over attributed rows) and
+        events_30d (audit rows in the last 30 days). Accounts without
+        audit history omit the activity keys — the console renders 'never'.
       tags: [Operators]
       security:
         - BearerAuth: []
       responses:
         '200':
-          description: List of operators
+          description: List of operators with MFA and activity summary
         '403':
           description: Admin role required
     post:
@@ -897,6 +933,183 @@ paths:
         '404':
           description: Unknown operator id
 
+  /api/operators/{id}/totp:
+    delete:
+      summary: Reset an operator's TOTP enrollment (admin recovery)
+      description: >-
+        Wipes the stored MFA secret and flag for the account (lost
+        authenticator recovery). The secret is never revealed — only
+        removed — and the action lands in the audit trail as
+        operator_totp_reset with the acting admin. Does NOT touch the
+        operator's sessions. Inherits the admin gate of the /api/operators
+        subtree; unknown ids answer 404.
+      tags: [Operators]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: MFA reset (response includes the affected username)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: totp_reset
+                  username:
+                    type: string
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Admin role required
+        '404':
+          description: Unknown operator id
+
+  /api/account/password:
+    post:
+      summary: Change the CALLER's own password (any authenticated role)
+      description: >-
+        Self-service credential change. Requires the CURRENT password
+        (verified through the same bcrypt + lockout path as login, so
+        brute-forcing it trips the same wall). The new password must be
+        10-128 characters and differ from the current one. On success
+        every outstanding token for the user is revoked (access AND
+        refresh, millisecond-precision iatms cut) — the only safe session
+        after a credential change is a fresh one. Audited as
+        operator_password_change.
+      tags: [Account]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 10
+                  maxLength: 128
+      responses:
+        '200':
+          description: Password changed; all tokens revoked
+        '400':
+          description: New password out of range or equal to current
+        '401':
+          description: Current password incorrect (or locked account)
+        '405':
+          description: Method not allowed
+
+  /api/account/totp/status:
+    get:
+      summary: MFA status of the CALLER (enabled / pending)
+      description: >-
+        Single boolean pair, no secret material. pending=true means a
+        setup secret exists but was never confirmed with a valid code.
+      tags: [Account]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: '{enabled, pending}'
+        '405':
+          description: Method not allowed
+
+  /api/account/totp/setup:
+    post:
+      summary: Start TOTP enrollment (generates a DISABLED secret)
+      description: >-
+        Generates a 160-bit secret (crypto/rand, Base32), stores it
+        encrypted with the column encryptor when a master key is
+        configured, and returns it ONCE with the otpauth:// URI
+        (algorithm SHA1, 6 digits, 30s period — the interoperable
+        authenticator profile). The account stays totp_enabled=0 until
+        /enable confirms a valid code. Refused with 409 while MFA is
+        already enabled. Audited as operator_totp_setup.
+      tags: [Account]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: '{secret, otpauth_uri}'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret:
+                    type: string
+                    example: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+                  otpauth_uri:
+                    type: string
+        '409':
+          description: TOTP already enabled — disable it first
+
+  /api/account/totp/enable:
+    post:
+      summary: Confirm enrollment with one valid code
+      tags: [Account]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  minLength: 6
+                  maxLength: 6
+      responses:
+        '200':
+          description: MFA enabled; future logins require the code
+        '400':
+          description: Invalid code or no pending setup
+        '409':
+          description: Already enabled
+
+  /api/account/totp/disable:
+    post:
+      summary: Disable MFA (requires a valid code for the CURRENT secret)
+      description: >-
+        Possession of the bearer token alone must not strip the second
+        factor. Wipes both the flag and the stored secret. Audited as
+        operator_totp_disable.
+      tags: [Account]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: MFA disabled
+        '400':
+          description: Invalid code
+        '409':
+          description: TOTP is not enabled
+
   /api/audit:
     get:
       summary: Read the append-only audit trail (audit:read — admin and auditor)
@@ -942,6 +1155,20 @@ paths:
             account do". Attributability requires the round-18 middleware:
             authenticated calls write their real operator id; unknown
             usernames return an empty array, never an error.
+        - name: before_id
+          in: query
+          required: false
+          description: >-
+            Cursor pagination (round 19): only rows with id < before_id are
+            returned. audit_log.id is a monotonic AUTOINCREMENT key, so the
+            cursor is a plain non-negative integer — 0 (or absent) means
+            "first page". The response stays a bare JSON array; a full page
+            may have more rows behind it, a short page is the end of the
+            trail. Negative or non-integer values answer 400.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
           schema:
             type: string
             maxLength: 64

@@ -102,6 +102,11 @@ func TestRevokeUserInvalidatesOldTokens(t *testing.T) {
 		t.Fatalf("pre-revocation token should be valid: %v", err)
 	}
 
+	// Separate mint from revoke beyond the 1ms classification window (r19:
+	// revocation is millisecond-precise via the iatms claim — a token
+	// minted strictly before the moment dies, one minted after lives even
+	// within the same second).
+	time.Sleep(5 * time.Millisecond)
 	tm.RevokeUser("frank")
 
 	if _, _, err := tm.ValidateToken(access); err == nil {
@@ -111,8 +116,8 @@ func TestRevokeUserInvalidatesOldTokens(t *testing.T) {
 		t.Fatal("refresh token must be rejected after RevokeUser")
 	}
 
-	// Tokens issued after the revocation event remain valid.
-	time.Sleep(1100 * time.Millisecond) // iat has 1s resolution
+	// Tokens issued after the revocation event remain valid — no waiting
+	// needed anymore: the iatms claim classifies them exactly.
 	newTok, _ := tm.GenerateToken("frank", "operator")
 	if _, _, err := tm.ValidateToken(newTok); err != nil {
 		t.Fatalf("post-revocation token should be valid: %v", err)
@@ -124,6 +129,8 @@ func TestRevocationIsScopedPerUser(t *testing.T) {
 	alice, _ := tm.GenerateToken("alice", "admin")
 	bob, _ := tm.GenerateToken("bob", "operator")
 
+	// Stay out of the 1ms classification window between mint and revoke.
+	time.Sleep(5 * time.Millisecond)
 	tm.RevokeUser("alice")
 
 	if _, _, err := tm.ValidateToken(alice); err == nil {

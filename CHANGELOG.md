@@ -1,5 +1,126 @@
 # WorldC2 — Changelog
 
+## v1.20.0 — Round 19: TOTP MFA + self-service password change, account lockout, operator activity, audit cursor & CSV (2026-09-15)
+
+Nineteenth round, continuing the deep/intensive cadence. The theme is **account
+security**: every operator can now harden their own account (TOTP second
+factor, self-service password rotation) and brute force hits a per-account
+wall that survives restarts. Six deliverables, zero new dependencies — the
+TOTP implementation is stdlib-only (`crypto/hmac` + `crypto/sha1`).
+
+### Added (Implementaciones)
+
+- **TOTP two-factor authentication (opt-in, per operator)** — new
+  `internal/totp` package implementing RFC 6238 (SHA-1, 30 s steps, 6-digit
+  codes, ±1 step skew, constant-time `hmac.Equal` compares) with RFC
+  4226/6238 test-vector pinning. `POST /api/account/totp/setup` generates a
+  160-bit crypto/rand secret, stores it **DISABLED** and encrypted with the
+  column encryptor when `WORLDC2_MASTER_KEY` is configured (pinned by
+  `TestTOTPSecretEncryptedAtRest`: the raw column must be `v2.` ciphertext),
+  and returns it once with the escaped `otpauth://` URI;
+  `POST /api/account/totp/enable` demands one valid code;
+  `POST /api/account/totp/disable` requires the CURRENT code (a bearer
+  token alone must not strip the factor); `GET /api/account/totp/status`
+  exposes `{enabled, pending}` without secret material. Login flow: a
+  correct password without a code answers `401 {totp_required:true}` and
+  never counts as an auth failure; a wrong code answers the same generic
+  401 as a bad password and DOES count toward the lockout. Admin recovery:
+  `DELETE /api/operators/{id}/totp` wipes the factor (never reveals it) and
+  lands in the audit trail as `operator_totp_reset`.
+- **Self-service password change** — `POST /api/account/password` verifies
+  the current password through the same bcrypt + lockout path as login
+  (brute-forcing it trips the same wall), enforces 10–128 chars, refuses
+  no-op rotations, then revokes every outstanding token for the user. The
+  console gains an Account-security dialog (click the operator chip in the
+  sidebar): password form + MFA enrollment panel.
+- **Account lockout (brute force)** — 5 consecutive failed attempts
+  (password stage or TOTP stage — code guessing hits the same wall) trip a
+  per-account lock persisted in the operators table (migration 11:
+  `failed_attempts`, `locked_until`); it survives server restarts, expires
+  after 5 minutes (auto-expiry, no permanent-DoS design) and clears on
+  success. Locked accounts answer the SAME generic `invalid credentials`
+  body as wrong passwords — no username or lock-state oracle — while the
+  audit trail records `auth_locked` separately.
+- **Operator activity summary** — `GET /api/operators` now carries
+  `totp_enabled` (enrollment badge, never the secret), `last_activity`,
+  `events_30d` and `last_login` aggregated from the audit trail in ONE
+  grouped query (the query the round-18 `operator_id` column was written
+  for); the Operators view renders the columns with a relative-time
+  formatting so dormant accounts are visible at a glance.
+- **Audit cursor pagination + CSV export** — `GET /api/audit?before_id=N`
+  walks past the 500-row page with a plain-integer cursor (monotonic
+  AUTOINCREMENT id — no timestamp-format traps, no composite tiebreaker),
+  composing with `?action=` and `?user=`; the response stays a bare array
+  so existing consumers keep parsing untouched. The Audit view gains
+  **Load more** (hides itself on the short page) and **Export CSV** through
+  the shared RFC 4180 + formula-guard serializer
+  (`worldc2-audit-YYYY-MM-DD.csv`).
+- **Server identity & health in /api/status** — the authenticated telemetry
+  endpoint adds `version`/`commit`/`go_version` (same ldflags identity as
+  `worldc2_build_info`), `db_ok` (round-trip ping) and `operators` /
+  `audit_entries` sanity counts (-1 on query failure, never a failed
+  payload); the console topbar renders the version chip on a 60 s cadence.
+- **Idle auto-logout** — 15 minutes without user interaction closes the
+  console session (client-side watchdog; the JWT TTL remains the hard
+  server-side limit) and the login screen explains why it reappeared.
+- **Configurable login rate** — `api.login_rate_per_min` (default 10,
+  historical behavior) lets deployments with many operators behind one
+  egress IP tune the /api/login bucket; the per-account lockout remains the
+  primary guess-rate control. E2E runs use 30.
+
+### Changed
+
+- Migration 11 `operator_security_columns`: `totp_secret` (encrypted at
+  rest when a master key is configured), `totp_enabled`, `failed_attempts`,
+  `locked_until`.
+- JWT revocation precision: `RevokeUser` now records the moment in
+  **milliseconds** and tokens carry an `iatms` claim, so a token minted
+  AFTER a revocation validates even within the same wall-clock second — the
+  old conservative now+1s cut silently bounced the password-change →
+  immediate re-login flow (found by the round-19 E2E; legacy second-only
+  tokens keep the old conservative rule).
+- `internal/version` exports `GoVersion` (runtime toolchain) alongside
+  Version/Commit.
+- `api/openapi.yaml` (34 paths): `/api/account/password`, `/api/account/
+  totp/{status,setup,enable,disable}`, `/api/operators/{id}/totp`,
+  `before_id` on `/api/audit`, the enriched Status schema, the `totp` login
+  field and the enriched operator listing — all parsed clean.
+- `config.example.yaml` documents `login_rate_per_min`; `Makefile` bumps
+  `VERSION ?= v1.20.0`; README grows seven feature rows and the E2E count.
+
+### Fixed
+
+- **JWT revocation granularity (z_bugs, found by the round-19 E2E)** — the
+  conservative `now+1s` revocation cut rejected tokens minted in the same
+  second as a revocation, silently bouncing the immediate re-login the
+  password-change flow forces (and any delete+recreate+login automation).
+  Fixed with the millisecond `iatms` claim; regression-pinned by
+  `TestRevokeThenImmediateRelogin`.
+- **Login 401 refresh swallow (found by the round-19 E2E)** — `api.js`
+  treated the login endpoint's structured 401 answers as expired-session
+  signals, attempted a pointless refresh and dropped the `totp_required`
+  flag before the form could see it; `/api/login` is now exempt from the
+  401-refresh dance.
+- **E2E suite self-cleaning (round 17 spec)** — the Files spec asserted an
+  empty listing but left its seeded artifact behind, so repeat runs against
+  a persistent dev server could never be green; it now really purges after
+  validating the Esc-cancel leg. Round-19 specs are idempotent too
+  (recreate-tolerant account seeding).
+
+### Verified
+
+- `go build ./...`, `go vet ./...`, `gofmt -l` clean.
+- `go test -race ./...`: 12 packages with tests in green (new: `totp`;
+  db +44 tests lines for lockout/MFA/activity/password; handlers round19
+  suite: password change, TOTP lifecycle, admin reset, cursor pagination,
+  status enrichment, account-route boundaries, configurable login rate).
+- `npm run build` clean (204.8 kB / 66.3 kB gzip).
+- Playwright browser E2E: **15/15** (setup + 14 specs) against the
+  reconstructed v1.20.0 binary — twice in a row on the same database.
+- Live security smoke: **29/29** checks on the real binary (auth gates,
+  TOTP lifecycle, revocation, lockout + oracle-freeness, audit actions,
+  cursor semantics, admin reset, cleanup).
+
 ## v1.19.0 — Round 18: full gallery refresh (GIFs + screenshots), command palette, audit operator attribution & retention, webhook test delivery (2026-09-15)
 
 Eighteenth round, under the operator's explicit directive: **update the README

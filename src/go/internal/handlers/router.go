@@ -15,8 +15,10 @@ type Router struct {
 	server      *c2.Server
 	rateLimiter *c2.RateLimiter
 	// loginLimiter is a tighter, dedicated bucket for /api/login: the
-	// global limiter allows 60 req/min shared with the whole API, which is
-	// far too permissive for password guessing against a single endpoint.
+	// global limiter allows 240 req/min shared with the whole API, which
+	// is far too permissive for password guessing against a single
+	// endpoint. The per-minute ceiling is configurable
+	// (api.login_rate_per_min, r19) and defaults to the historical 10.
 	loginLimiter *c2.RateLimiter
 	// allowedOrigins is the exact-match CORS allowlist (config
 	// api.allowed_origins). Empty (the default) means no cross-origin
@@ -36,8 +38,9 @@ func NewRouter(server *c2.Server, trustedProxies []string, allowedOrigins []stri
 	// req/min PER OPEN CONSOLE. Two operators behind one NAT/VPN IP tripped
 	// the limiter during normal browsing (and the grown E2E suite hit the
 	// same wall, which is what uncovered the arithmetic). Bruteforce is
-	// still handled by the dedicated login limiter (10/min on /api/login);
-	// this global bucket only stops floods.
+	// handled by the dedicated login limiter (api.login_rate_per_min,
+	// default 10/min on /api/login) plus the per-account lockout in the
+	// DB; this global bucket only stops floods.
 	rateLimiter := c2.NewRateLimiter(240, time.Minute)
 	if err := rateLimiter.SetTrustedProxies(trustedProxies); err != nil {
 		// NewRouter cannot return an error without breaking the wiring, but
@@ -45,10 +48,18 @@ func NewRouter(server *c2.Server, trustedProxies []string, allowedOrigins []stri
 		// spoofable header — refuse to start instead.
 		panic(fmt.Sprintf("trusted_proxies: %v", err))
 	}
+	// Login bucket: configurable per-minute ceiling (r19), defaulting to
+	// the historical 10/min when the key is absent or non-positive. The
+	// per-ACCOUNT lockout in the DB is the primary guess-rate wall; this
+	// bucket bounds bcrypt work per source IP on top of it.
+	loginRatePerMin := 10
+	if cfg := server.Config(); cfg != nil && cfg.API.LoginRatePerMin > 0 {
+		loginRatePerMin = cfg.API.LoginRatePerMin
+	}
 	return &Router{
 		server:         server,
 		rateLimiter:    rateLimiter,
-		loginLimiter:   c2.NewRateLimiter(10, time.Minute),
+		loginLimiter:   c2.NewRateLimiter(loginRatePerMin, time.Minute),
 		allowedOrigins: parseAllowedOrigins(allowedOrigins),
 	}
 }
@@ -135,6 +146,14 @@ func (r *Router) Setup() *http.ServeMux {
 	// Operators (admin only)
 	mux.HandleFunc("/api/operators", cors(auth(admin(audit(rate(r.handleOperators))))))
 	mux.HandleFunc("/api/operators/", cors(auth(admin(audit(rate(r.handleOperatorDelete))))))
+
+	// Own account: self-service password change and TOTP MFA enrollment
+	// (r19). Any authenticated role — the handler resolves the operator
+	// from the server-set X-Auth-* identity, never from the request, so
+	// an operator can ONLY ever act on their own account. The subtree
+	// dispatcher rejects unknown paths with 404 and unsupported methods
+	// with 405.
+	mux.HandleFunc("/api/account/", cors(auth(audit(rate(r.handleAccount)))))
 
 	// Audit trail — read API over the append-only audit_log table every
 	// middleware already writes to. Gated by the audit:read PERMISSION

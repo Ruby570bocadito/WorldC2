@@ -8,6 +8,12 @@
       </div>
 
       <form class="login-form" @submit.prevent="login">
+        <!-- Idle-logout notice (r19): set by App.vue when it closes the
+             session after inactivity. -->
+        <p v-if="idleNotice" class="login-idle" role="status">
+          Session closed after 15 minutes of inactivity
+        </p>
+
         <div class="field">
           <label class="field-label" for="login-user">Operator</label>
           <input
@@ -30,6 +36,26 @@
             type="password"
             autocomplete="current-password"
             required
+          />
+        </div>
+
+        <!-- Second factor (r19): only shown when the server answers a
+             correct password with totp_required — the field never
+             appears for accounts without MFA. -->
+        <div v-if="needsTotp" class="field">
+          <label class="field-label" for="login-totp">Authenticator code</label>
+          <input
+            id="login-totp"
+            ref="totpInput"
+            v-model="totp"
+            class="input mono"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            maxlength="6"
+            autocomplete="one-time-code"
+            placeholder="6-digit code"
+            spellcheck="false"
           />
         </div>
 
@@ -57,9 +83,17 @@ export default {
     return {
       username: '',
       password: '',
+      totp: '',
+      needsTotp: false,
       loading: false,
       error: '',
+      idleNotice: false,
     }
+  },
+  mounted() {
+    // The idle timeout flow drops the session and returns here with a
+    // flag; show why the login screen reappeared.
+    this.idleNotice = new URLSearchParams(window.location.search).get('idle') === '1'
   },
   methods: {
     async login() {
@@ -68,13 +102,26 @@ export default {
       this.error = ''
       try {
         // POST /api/login -> { token, refresh_token, expires_in, user, role }
-        const data = await api.post('/api/login', {
+        // With MFA enabled, a correct password alone answers 401 +
+        // { totp_required: true } — reveal the code field and retry with
+        // the 6-digit code included.
+        const body = {
           username: this.username,
           password: this.password,
-        })
+        }
+        if (this.needsTotp && this.totp) body.totp = this.totp.trim()
+        const data = await api.post('/api/login', body)
         setAuth(data) // stores bty_token, bty_refresh and computes bty_expires
         this.$router.push('/')
       } catch (e) {
+        if (e.status === 401 && e.data && e.data.totp_required) {
+          this.needsTotp = true
+          this.error = ''
+          this.$nextTick(() => {
+            if (this.$refs.totpInput) this.$refs.totpInput.focus()
+          })
+          return
+        }
         this.error =
           e.status === 401
             ? 'Invalid credentials'
@@ -143,6 +190,17 @@ export default {
   border-radius: var(--radius-sm);
   padding: 9px 12px;
   text-align: center;
+}
+
+.login-idle {
+  font-size: 12.5px;
+  color: var(--warning, #e5b348);
+  background: rgba(229, 179, 72, 0.08);
+  border: 1px solid rgba(229, 179, 72, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  text-align: center;
+  margin: 0 0 4px;
 }
 
 .login-btn {

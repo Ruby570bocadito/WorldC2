@@ -92,3 +92,57 @@ func TestRotationRejectsLegacyNoJtiTokens(t *testing.T) {
 		t.Fatal("legacy no-jti refresh token accepted by ValidateRefreshToken")
 	}
 }
+
+// TestRevokeThenImmediateRelogin pins the r19 revocation precision: after
+// RevokeUser, a token minted BEFORE it is rejected, and a token minted
+// AFTER it (even within the same millisecond window a seconds-only iat
+// could not classify) validates — the password-change → immediate
+// re-login flow must not bounce the owner.
+func TestRevokeThenImmediateRelogin(t *testing.T) {
+	tm := NewTokenManager(nil, time.Hour)
+
+	oldToken, err := tm.GenerateToken("dave", "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tm.ValidateToken(oldToken); err != nil {
+		t.Fatalf("pre-revocation token must validate: %v", err)
+	}
+
+	// Separate the mint and the revoke by a few milliseconds so the test
+	// never lands inside the 1ms classification window (a token minted in
+	// the SAME millisecond as the revocation is allowed — the ambiguity
+	// window shrank from 1s to 1ms by design).
+	time.Sleep(5 * time.Millisecond)
+	tm.RevokeUser("dave")
+
+	// The outstanding token dies.
+	if _, _, err := tm.ValidateToken(oldToken); err == nil {
+		t.Fatal("pre-revocation token must be rejected after RevokeUser")
+	}
+
+	// A fresh login minted immediately after the revocation LIVES.
+	fresh, err := tm.GenerateToken("dave", "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tm.ValidateToken(fresh); err != nil {
+		t.Fatalf("post-revocation login must validate even in the same second: %v", err)
+	}
+
+	// Refresh tokens minted before the revocation die too (rotation runs
+	// through the same validate path).
+	oldRefresh, err := tm.GenerateRefreshToken("dave")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	tm.RevokeUser("dave")
+	if _, err := tm.RotateRefreshToken(oldRefresh); err == nil {
+		t.Fatal("pre-revocation refresh token must be rejected")
+	}
+	freshRefresh, _ := tm.GenerateRefreshToken("dave")
+	if _, err := tm.RotateRefreshToken(freshRefresh); err != nil {
+		t.Fatalf("post-revocation refresh token must rotate: %v", err)
+	}
+}
